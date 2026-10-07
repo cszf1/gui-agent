@@ -68,25 +68,31 @@ def main():
     with tempfile.TemporaryDirectory(prefix="gui-agent-native-") as directory:
         fixture, state = Path(directory) / "fixture.ps1", Path(directory) / "state.json"
         fixture.write_text(FIXTURE, encoding="utf-8-sig")
+        fixture_log = Path(directory) / "fixture.log"
+        output = fixture_log.open("wb")
         process = subprocess.Popen(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass",
                                     "-File", str(fixture), "-Title", title, "-StateFile", str(state)],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                   stdout=output, stderr=subprocess.STDOUT)
         env = None
         def wait_for(predicate, timeout=10):
             deadline = time.monotonic() + timeout
             last = {}
             while time.monotonic() < deadline:
                 if process.poll() is not None:
-                    raise RuntimeError("Native fixture exited before verification")
+                    diagnostic = fixture_log.read_text(encoding="utf-8", errors="replace")[-4000:]
+                    raise RuntimeError(f"Native fixture exited before verification: {diagnostic}")
                 try:
                     last = json.loads(state.read_text(encoding="utf-8-sig"))
                     if predicate(last): return last
                 except (OSError, ValueError):
                     pass
                 time.sleep(0.05)
-            raise AssertionError(f"Native application outcome did not arrive: {last}")
+            diagnostic = fixture_log.read_text(encoding="utf-8", errors="replace")[-4000:]
+            raise AssertionError(f"Native application outcome did not arrive: {last}; fixture output: {diagnostic}")
         try:
-            wait_for(lambda row: "clicks" in row)
+            # Cold Windows/.NET GUI startup is distinct from action settling.
+            # Preserve the shorter deadlines and exact outcome assertions below.
+            wait_for(lambda row: "clicks" in row, timeout=45)
             env = WindowsEnv()
             assert env.focus_window(title), "Cannot activate the native test window"
             cfg = load_config(root / "configs/default.yaml", {"env": {"platform": "windows"},
@@ -118,6 +124,7 @@ def main():
             try: process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill(); process.wait()
+            output.close()
 
 
 if __name__ == "__main__":

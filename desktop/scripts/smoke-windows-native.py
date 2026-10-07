@@ -108,6 +108,22 @@ def main():
                 assert result.ok and result.route == "uia_value", (result, text)
                 wait_for(lambda row: row.get("name") == text)
                 input_routes.append(result.route)
+            # Exercise real keyboard replacement on the same Win32 Edit
+            # (which ignores Ctrl+A), simulating a missing ValuePattern only.
+            class KeyboardOnlyControl:
+                def __init__(self, control): self.control = control
+                def GetValuePattern(self): return None
+                def __getattr__(self, name): return getattr(self.control, name)
+            obs = agent._observe()
+            focused = next(e for e in obs.elements if e.focused and e.name == "Name")
+            key = focused.attrs["uia_key"]
+            control, identity = env._controls[key]
+            env._controls[key] = (KeyboardOnlyControl(control), identity)
+            text = "GUI Agent Keyboard 测试用户"
+            result = agent._execute_gated(Action("type", text=text, clear=True), obs)
+            assert result.ok and result.route == "windows_input", result
+            wait_for(lambda row: row.get("name") == text)
+            input_routes.append(result.route)
             routes = []
             for name, route in [("Subscribe", "uia_toggle"), ("Pro", "uia_select"), ("Continue", "uia_invoke")]:
                 obs = agent._observe()
@@ -116,8 +132,8 @@ def main():
                 assert result.ok and result.route == route, (result, name)
                 routes.append(result.route)
             actual = wait_for(lambda row: row.get("clicks") == 1 and row.get("checked") and row.get("selected"))
-            assert actual["name"] == "GUI Agent 测试用户" and actual["clicks"] == 1
-            print("Real Windows WinForms/UIA outcomes verified: ASCII + Chinese input, toggle, select, invoke.")
+            assert actual["name"] == text and actual["clicks"] == 1
+            print("Real Windows WinForms/UIA outcomes verified: native ASCII + Chinese replacement, keyboard fallback, toggle, select, invoke.")
             print(json.dumps({"input_routes": input_routes, "routes": routes, "outcome": actual}, ensure_ascii=True))
         finally:
             if env is not None:

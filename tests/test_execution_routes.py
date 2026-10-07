@@ -260,3 +260,40 @@ def test_windows_native_replacement_does_not_append_old_text_or_retype(monkeypat
     assert ctrl.text == "GUI Agent 测试用户" and len(ctrl.writes) == 1
     assert pg.calls == ([("write", ("",), {"interval": 0.01}), ("press", ("enter",), {})] if submit else [])
     assert env.input.focus_check is None
+
+
+def test_windows_keyboard_replacement_works_when_ctrl_a_is_ignored(monkeypatch):
+    import sys
+    from gua.env.desktop import PyAutoGUIInput
+    pg = fake_pyautogui()
+    monkeypatch.setitem(sys.modules, "pyautogui", pg)
+    state = {"value": "Previous text", "cursor": 13, "selection": False}
+    def hotkey(*keys):
+        if keys == ("ctrl", "home"): state["cursor"] = 0
+        if keys == ("ctrl", "shift", "end") and state["cursor"] == 0:
+            state["selection"] = True
+        # This application does not implement Ctrl+A.
+    def press(key):
+        if key == "backspace":
+            state["value"] = "" if state["selection"] else state["value"][:-1]
+    def write(text, **kwargs): state["value"] += text
+    pg.hotkey, pg.press, pg.write = hotkey, press, write
+    result = PyAutoGUIInput("windows").run(Action("type", text="New text", clear=True))
+    assert result.ok and state["value"] == "New text"
+
+
+def test_windows_keyboard_clear_stops_before_deletion_if_selection_moves_focus(monkeypatch):
+    import sys
+    from gua.env.desktop import PyAutoGUIInput
+    pg = fake_pyautogui()
+    monkeypatch.setitem(sys.modules, "pyautogui", pg)
+    focused = [True]
+    def hotkey(*keys): focused[0] = False
+    pg.hotkey = hotkey
+    inp = PyAutoGUIInput("windows")
+    def check():
+        if not focused[0]: raise ValueError("stale_target")
+    inp.focus_check = check
+    with pytest.raises(ValueError, match="stale_target"):
+        inp.run(Action("type", text="PRIVATE", clear=True))
+    assert pg.calls == []

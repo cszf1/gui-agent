@@ -109,8 +109,17 @@ class PyAutoGUIInput:
             check()
             mod = "command" if self.platform == "macos" else "ctrl"
             if a.clear:
-                pg.hotkey(mod, "a")
-                check()
+                if self.platform == "windows":
+                    # Standard Win32 Edit controls may ignore Ctrl+A. Select
+                    # the full single/multiline field without that shortcut,
+                    # including password fields where native values stay unread.
+                    pg.hotkey("ctrl", "home")
+                    check()
+                    pg.hotkey("ctrl", "shift", "end")
+                    check()
+                else:
+                    pg.hotkey(mod, "a")
+                    check()
                 pg.press("backspace")
                 check()
             if self.type_fn:

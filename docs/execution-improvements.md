@@ -44,7 +44,7 @@ npm test
 npm run test:e2e
 ```
 
-Windows CI 还运行 `desktop/scripts/smoke-windows-native.py`。它创建真实 WinForms 窗口，由 UIA 执行焦点、勾选、单选和按钮调用，并测试 ASCII/中文输入，读取应用自己写出的结果确认操作生效；不能激活窗口或找不到控件就是失败。安装包另有冻结 Worker 与 Chromium 的任务检查。这个小型原生场景不代表所有 Windows 应用都已测过。
+Windows CI 还运行 `desktop/scripts/smoke-windows-native.py`。它创建真实 WinForms 窗口，由 UIA 执行焦点、勾选、单选和按钮调用，并测试 ASCII/中文替换，读取应用自己写出的结果确认操作生效；还仅屏蔽 ValuePattern，在真实控件上检查键盘替换备用路径。Windows 键盘清空使用 Ctrl+Home、Ctrl+Shift+End，不依赖部分 Win32 输入框忽略的 Ctrl+A；选中与删除之间继续检查焦点。不能激活窗口或找不到控件就是失败。安装包另有冻结 Worker 与 Chromium 的任务检查。这个小型原生场景不代表所有 Windows 应用都已测过。
 
 基准使用真实旧提交 `55638dbba439a73e358d5d355918f7fefdd2cfb4` 与当前代码，交替运行相同姓名、邮箱、套餐、订阅和提交结果的本地表单。
 旧版分别点击与输入，新版使用指定字段输入；均保留验证、安全与恢复。计时排除浏览器启动与首次绘制，包含观察、操作、等待与完成核验。

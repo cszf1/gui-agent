@@ -110,6 +110,28 @@ def test_worker_credential_scrubber_does_not_change_preview_policy():
     assert "a-private-model-key" not in event["message"]
 
 
+def test_worker_entrypoint_reads_and_writes_chinese_under_windows_code_page(monkeypatch):
+    import sys
+    from gua.desktop import main
+
+    message = {"command": "test", "runId": "中文请求", "settings": {"provider": "未知接口"}}
+    source = io.TextIOWrapper(io.BytesIO((json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")),
+                              encoding="cp1252")
+    raw = io.BytesIO()
+    output = io.TextIOWrapper(raw, encoding="cp1252")
+    diagnostics = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "stdin", source)
+        patch.setattr(sys, "stdout", output)
+        patch.setattr(sys, "stderr", diagnostics)
+        main()
+        events = [json.loads(line) for line in raw.getvalue().decode("utf-8").splitlines()]
+    assert events[0]["type"] == "ready"
+    assert events[1]["type"] == "error"
+    assert events[1]["runId"] == "中文请求"
+    assert events[1]["message"] == "请选择 OpenAI 兼容接口或 Anthropic Messages 接口"
+
+
 @pytest.mark.parametrize("original", [None, "an-existing-value"])
 def test_configured_key_does_not_remain_in_the_environment_of_launched_apps(monkeypatch, original):
     name = "GUI_AGENT_DESKTOP_API_KEY"

@@ -406,6 +406,12 @@ class Worker:
 
 
 def main():
+    # PyInstaller's Windows bootloader can ignore PYTHONIOENCODING and keep the
+    # system code page. The desktop pipe protocol is always UTF-8 in both ways.
+    for name in ("stdin", "stdout", "stderr"):
+        reconfigure = getattr(getattr(sys, name), "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace" if name == "stderr" else "strict")
     # All normal prints go to stderr. Only Worker.emit writes protocol messages.
     output = sys.stdout
     sys.stdout = sys.stderr

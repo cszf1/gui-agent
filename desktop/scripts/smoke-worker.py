@@ -28,10 +28,19 @@ def main():
         try:
             ready = events.get(timeout=30)
             assert ready["type"] == "ready", ready
+            # Frozen Windows interpreters may start with a legacy code page.
+            # Exercise UTF-8 input and output before the browser task.
+            probe_id = "中文通信验证"
+            worker.stdin.write(json.dumps({"command": "test", "runId": probe_id,
+                                           "settings": {"provider": "未知接口"}}, ensure_ascii=False) + "\n")
+            worker.stdin.flush()
+            probe = events.get(timeout=30)
+            assert probe["type"] == "error" and probe["runId"] == probe_id, probe
+            assert "请选择" in probe["message"], probe
             run_id = str(uuid.uuid4())
             worker.stdin.write(json.dumps({"command": "run", "runId": run_id, "demo": True,
-                                           "task": "offline form demo", "runsRoot": directory,
-                                           "headless": True, "settings": {}}) + "\n")
+                                           "task": "填写本地联系表单并提交", "runsRoot": directory,
+                                           "headless": True, "settings": {}}, ensure_ascii=False) + "\n")
             worker.stdin.flush()
             previews = 0
             while True:

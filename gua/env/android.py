@@ -173,7 +173,7 @@ class AndroidEnv(Env):
             return [["input", "swipe", x, y, str(int(a.x2)), str(int(a.y2)), "400"]]
         if a.type == "scroll":
             w, h = self.screen_size()
-            cx, cy = (x, y) if x is not None else (w // 2, h // 2)
+            cx, cy = (int(a.x), int(a.y)) if a.x is not None else (w // 2, h // 2)
             d = min(a.amount * self.scroll_unit_px, int(h * 0.4))
             # 手指方向与内容滚动方向相反：内容向下滚 = 手指向上滑
             ex, ey = {"down": (cx, cy - d), "up": (cx, cy + d), "left": (cx + d, cy), "right": (cx - d, cy)}[a.direction]

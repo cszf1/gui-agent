@@ -1,7 +1,7 @@
 # gui-agent（`gua`）：跨平台、可验证执行与失败恢复的 GUI Agent
 
 SRTP 研究代码 **v0.3.1**（v0.3 修复第一轮代码审查的 12 个问题；v0.3.1 修复第二轮审查的 7 个问题及自查发现的同类问题，
-见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)）。当前工作树包含第三轮安全修订，**尚未发布新版本**。
+见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)）。当前工作树包含第三、第四轮安全修订，**尚未发布新版本**。
 前身是只支持 Windows 的 `win-gui-agent`（`wga`）。研究方向 A：**执行验证与失败恢复**
 （时间失配：页面没刷新就判断、窗口被最小化/抢焦点、目标在屏幕外……）。
 
@@ -9,10 +9,21 @@ SRTP 研究代码 **v0.3.1**（v0.3 修复第一轮代码审查的 12 个问题�
 **Windows / macOS / Linux(X11) / Android(adb) / Web(Playwright) / Mock**。
 
 - 设计说明：[docs/design.md](docs/design.md)
-- 审查修复对照（三轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
+- 审查修复对照（四轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
 - 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)
 
 ## 更新日志
+
+### 未发布（第四轮审查修复）
+
+- **导航同源隔离**：启用域名白名单时，保留非 GET/HEAD 方法的跨源导航重定向（如 POST → 307/308）在请求下一跳前
+  被拒绝，避免把目标文档作为来源站点的文档执行。普通 GET 跳转、POST → 301/302/303 → GET 和同源 POST 跳转仍可用。
+- **输入目标身份**：Web 输入核对安全观察中的实际元素句柄、页面与 frame；确认期间换框、刷新后复用 DOM 编号、
+  控件密码属性改变时中止输入，重新观察后再判断。clear/type/submit 前检查焦点，清空过程中移焦也立即中止。
+- **Android 滚动**：指定 x/y 的 scroll 先用整数计算滑动端点，再生成 adb 参数，避免字符串运算导致运行崩溃。
+- **纯视觉消融**：步骤级 L2 验证遵守 `a11y_in_prompts`，关闭文字信息时不再附带动作前后的 DOM/无障碍文字。
+
+修复对应关系与验证结果见 [第四轮修复记录](docs/review-fixes.md#第四轮审查修复)。
 
 ### 未发布（第三轮安全修订）
 
@@ -359,8 +370,9 @@ GitHub Actions：`core` 任务在 ubuntu / windows / macos × Python 3.10 / 3.12
 - Android 输入走 `adb shell input text` / ADBKeyboard 广播，明文会短暂出现在设备进程参数 / 广播里（其他应用可监听广播），这是
   adb 通道本身的限制。
 - Web：closed shadow root 无法穿透；可能隐藏实际输入目标的非原生焦点按 unknown 处理，不能安全绑定目标时不输入。
-  跨源 iframe 依赖 Playwright 的 frame 访问。合成无脚本跳转与原生重定向的历史行为可能不同；307/308 的非 GET 导航仍由
-  处理器跟随，地址栏停留在第一跳。域名白名单默认限制导航，只有 `block_subresources=True` 才同时限制子资源，不是系统网络沙箱。
+  跨源 iframe 依赖 Playwright 的 frame 访问。合成无脚本跳转与原生重定向的历史行为可能不同；同源 307/308 的非 GET 导航仍由
+  处理器跟随，地址栏停留在第一跳。启用白名单时，保留非 GET/HEAD 方法的跨源导航被拒绝；来源请求已经发出，拒绝不会撤销
+  来源站点的业务副作用。域名白名单默认限制导航，只有 `block_subresources=True` 才同时限制子资源，不是系统网络沙箱。
 - 新鲜证据仍是界面文本片段层面的判断，不等于服务器业务结果证明。目标本来就已满足、没有新证据的子目标在没有 L2 时
   保持 uncertain；常驻的不定进度条或忙碌状态会阻止收尾。L2 的可靠性仍需真实模型实验验证。
 

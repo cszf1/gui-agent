@@ -294,7 +294,7 @@ class Verifier:
         tb_before = (before.text or "")[:400]
         tb_after = (after.text or "")[:400]
         text_block = ""
-        if tb_before or tb_after:
+        if self.a11y_prompt and (tb_before or tb_after):
             text_block = f"Visible text before:\n{tb_before}\nVisible text after:\n{tb_after}\n"
         out = self.llm.chat(STEP_SYSTEM.format(platform=self.platform), STEP_PROMPT.format(
             action=action_desc if action_desc is not None else action.safe_short(before),

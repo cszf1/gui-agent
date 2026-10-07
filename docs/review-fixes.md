@@ -116,3 +116,28 @@
 ## 第三轮随修复改动的旧测试
 
 - `tests/test_a11y_parsers.py::test_ax_tree_retina_scale`：旧断言通过 `by_name(els, "Password")` 选取密码框。由于条目 r10 确立了“所有平台的密码元素统一使用固定安全名称 `password field`，不再信任不可信标签”的明确安全契约，该断言调整为通过 `next(e for e in els if e.is_password)` 选取，并断言其 `name == SAFE_PASSWORD_NAME`、`value is None`，其余 Retina 坐标与属性断言保持不变。
+
+---
+
+# 第四轮审查修复
+
+基于 `318fa56` 的审查复现，修复 2 项高优先级安全问题和 2 项中优先级执行 / 实验问题。
+
+| 问题 | 修复行为 | 回归测试 |
+|---|---|---|
+| 跨源 POST 导航经 307/308 后，目标文档在来源 origin 中执行并能读取来源 localStorage | `env/web.py`：保留非 GET/HEAD 方法的跨源导航在请求下一跳前 abort，禁止用来源请求 fulfill 跨源文档；GET 导航、POST 转 GET 和同源 POST 跳转保留 | `test_web_review_execution.py`：真实 Chromium 检查目标未收到 POST、目标脚本未执行；原生导航 / 302 / 303 对照检查目标 origin 和 storage 隔离。`test_review_url_policy.py`：主机、端口、协议改变以及多跳导航均在跨源下一跳前拒绝 |
+| 确认期间换到另一个密码框仍输入完整秘密；页面刷新可复用 DOM 编号 | `env/web.py`：保存安全观察中的实际元素句柄、页面与 frame；输入前校验同一元素仍连接、属性仍一致，变化时返回 blocked_by_safety。clear 的两次按键之间及每次输入前后复核焦点 | `test_web_review_execution.py`：确认期间换框不输入、不清空、不提交；刷新后同编号不能继承授权；普通输入正常；同一元素变成密码框时要求重新观察 |
+| Android 指定 x/y 的 scroll 用字符串参与端点计算，抛未捕获 TypeError | `env/android.py`：滑动坐标用整数计算，最终 argv 才转字符串 | `test_review_execution.py`：四个方向、指定坐标 / 屏幕中心共 8 项，核对实际执行的 adb argv |
+| vision_only 的步骤级 L2 验证仍附带 DOM 文本 | `verify/verifier.py`：仅在 a11y_in_prompts 允许时附带动作前后文本 | `test_review_execution.py`：on_event / every_step 下分别检查纯视觉、仅关闭提示词文字、保留文字对照，共 6 项 |
+
+新增 **32 项回归用例**（14 项执行 / 提示词、11 项浏览器、7 项离线导航边界）。没有改写原有测试断言。
+
+验证环境：Linux / Python 3.12.14 / Playwright 1.63.0 / Chromium 153。
+
+- `python -B -m pytest -q -p no:cacheprovider`：**375 passed**，含真实浏览器测试，无跳过。
+- `gua demo`：**6/6 任务通过**，全部返回 done，false_done_rate=0。
+- `git diff --check`：通过。
+
+行为限制：启用域名白名单时，保留非 GET/HEAD 方法的跨源导航被明确拒绝。发现重定向时来源请求已经发出，
+拒绝不会撤销来源站点的业务副作用。跨源子资源 / fetch 的既有逐跳检查与去认证头行为保持原状。
+本轮未调用真实付费模型 API，未在 Windows / macOS 桌面或 Android 真机上做端到端验证。

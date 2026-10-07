@@ -305,6 +305,33 @@ def test_navigation_post_307_is_followed_with_post():
     assert f[1]["url"] == f"{BASE}/p2" and f[1]["method"] == "POST" and f[1]["post_data"] == b"keep"
 
 
+@pytest.mark.parametrize("status", [307, 308])
+@pytest.mark.parametrize("target", ["http://b.test/land", "http://a.test:8080/land", "https://a.test/land"])
+def test_method_preserving_cross_origin_navigation_is_not_fetched(status, target):
+    req = Req(f"{BASE}/p", method="POST", body=b"private body", nav=True)
+    route = Route(req, {req.url: Resp(status, {"location": target})})
+    env = WebEnv(allowed_domains=["a.test", "b.test"])
+    env._route(route)
+    assert len(_fetches(route)) == 1
+    assert route.calls[-1][0] == "abort"
+    assert not any(kind in {"fulfill", "continue"} for kind, _ in route.calls)
+    assert env.blocked_navigations == [target]
+
+
+def test_same_origin_post_hop_cannot_hide_later_cross_origin_navigation():
+    req = Req(f"{BASE}/p", method="POST", body=b"private body", nav=True)
+    route = Route(req, {
+        req.url: Resp(307, {"location": f"{BASE}/q"}),
+        f"{BASE}/q": Resp(308, {"location": "http://b.test/land"}),
+    })
+    env = WebEnv(allowed_domains=["a.test", "b.test"])
+    env._route(route)
+    assert len(_fetches(route)) == 2
+    assert _fetches(route)[1]["post_data"] == b"private body"
+    assert route.calls[-1][0] == "abort"
+    assert env.blocked_navigations == ["http://b.test/land"]
+
+
 # =====================================================================  条目 6：execute 先跑 validate
 def test_web_execute_calls_action_validate(monkeypatch):
     def boom(self):

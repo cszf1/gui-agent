@@ -26,6 +26,7 @@ v0.3（审查条目 9）：域名白名单在**浏览器层**强制执行，而�
 3. 手动逐跳 fetch 维护 current_url / current_method / current_body / current_headers：
    303（HEAD 例外）、301/302 的 POST 转 GET 后清空 body 与 body 相关头，307/308 保留当前状态（不恢复原 POST）；
    跨 origin 删除 authorization / proxy-authorization / cookie 等敏感请求头；所有异常 abort，绝不重发或按类型重试。
+   保留非 GET/HEAD 方法的跨源导航重定向在下一跳请求前拒绝，避免把目标文档交付为来源站点的文档。
 4. 敏感输入：SNAPSHOT_JS / FOCUS_JS 都按 autocomplete ASCII 空白 token 与 CSS 掩码判定密码框；
    掩码 contenteditable 的文本（含 textContent）从名字 / body 文本 / 祖先名字里整棵排除；
    closed shadow host（或任何无法证明是原生输入目标的元素）不报告为"已知焦点"，一律保守 unknown。
@@ -332,6 +333,7 @@ class WebEnv(Env):
         self._hops = 0                               # 连续客户端重定向跳数（防重定向环）
         self._last_focus_secure: bool = False
         self._last_focus_dom_id: Optional[str] = None
+        self._last_focus_page = self._last_focus_frame = self._last_focus_handle = None
 
     # ---------------------------------------------------------------- 生命周期
     def _ensure(self) -> None:
@@ -461,6 +463,14 @@ class WebEnv(Env):
                 route.abort("blockedbyclient")
                 return
             new_method = _next_method(resp.status, method)
+            if nav and method not in ("GET", "HEAD") and new_method == method \
+                    and _origin(target) != _origin(raw_url):
+                # fulfill 只能完成原始请求，无法把文档 origin 改为 target。
+                # 不预取目标，也不重放正文：方法保留的跨源导航必须拒绝。
+                self._record_block(target, "method-preserving cross-origin navigation redirect "
+                                   "cannot safely preserve the document origin", page)
+                route.abort("blockedbyclient")
+                return
             if nav and (method in ("GET", "HEAD") or new_method != method):
                 # 导航：改成客户端 meta refresh（无脚本），下一跳是新的导航请求，会再次进入本处理器逐跳检查；
                 # 原响应头（含 Set-Cookie）按 Playwright 约定保留，去掉会卡住跳转的头。
@@ -585,6 +595,9 @@ class WebEnv(Env):
                 self._pw.stop()
         finally:
             self._pw = self._browser = self._ctx = self.page = self.active = None
+            self._last_focus_page = self._last_focus_frame = self._last_focus_handle = None
+            self._last_focus_dom_id = None
+            self._last_focus_secure = False
 
     # ---------------------------------------------------------------- 观察
     def _alive_active(self):
@@ -699,6 +712,33 @@ class WebEnv(Env):
         except Exception:  # noqa: BLE001
             return None, None
 
+    def _remember_focus_handle(self, pg) -> None:
+        """保存安全观察中的元素身份；句柄不会因页面刷新后的 DOM 编号复用而指向新元素。"""
+        if self._last_focus_handle is not None:
+            try:
+                self._last_focus_handle.dispose()
+            except Exception:  # 页面可能已经导航
+                pass
+        self._last_focus_page = pg
+        self._last_focus_frame = self._last_focus_handle = None
+        if self._last_focus_dom_id is None:
+            return
+        frame, handle = self._focus_handle(pg)
+        if handle is None:
+            return
+        try:
+            dom_id = handle.evaluate("(el, fid) => { " + _JS_HELPERS + " return domId(el, fid); }",
+                                     self._frame_index(pg, frame))
+            if dom_id == self._last_focus_dom_id:
+                self._last_focus_frame, self._last_focus_handle = frame, handle
+                return
+        except Exception:  # 观察与绑定之间已换页面 / 移焦：后续输入必须拒绝
+            pass
+        try:
+            handle.dispose()
+        except Exception:  # 句柄所在文档可能已经导航
+            pass
+
     @staticmethod
     def _handle_focused(handle) -> bool:
         """元素句柄现在还持有键盘焦点吗（open shadow root 内也算）。任何异常 → False（保守）。"""
@@ -785,6 +825,7 @@ class WebEnv(Env):
             self._apply_focus(elems, info, img.size)
             self._last_focus_secure = bool(info.get("secure")) if isinstance(info, dict) else False
             self._last_focus_dom_id = info.get("dom_id") if isinstance(info, dict) else None
+            self._remember_focus_handle(pg)
         wins = []
         for p in self._ctx.pages:
             try:
@@ -823,31 +864,44 @@ class WebEnv(Env):
         return r
 
     def _do_type(self, pg, a: Action, t0: float) -> ExecResult:
-        """clear / type：绑定动作开始时真实焦点元素的 handle（穿透 open shadow / iframe），
+        """clear / type：核对安全观察中的元素身份，再绑定实际焦点（穿透 open shadow / iframe），
         clear 与每个输入阶段都复查焦点仍是它；焦点改变 / 目标消失 → 发送秘密前返回 blocked_by_safety，
         绝不把焦点拉回去替用户执行，也不整串无检查地交给全局 keyboard。"""
         frame, handle = self._focus_handle(pg)
         if handle is None:
             return ExecResult(False, "blocked_by_safety: keyboard focus target could not be bound",
                               t0, time.time())
-        if self._last_focus_secure:
+        if self._last_focus_dom_id is not None:
             try:
+                same_target = (pg is self._last_focus_page and frame is self._last_focus_frame
+                               and self._last_focus_handle is not None
+                               and self._last_focus_handle.evaluate(
+                                   "(expected, actual) => expected.isConnected && expected === actual", handle))
+                if not same_target:
+                    return ExecResult(False, "blocked_by_safety: focus target changed since observation",
+                                      t0, time.time())
                 is_secure = bool(handle.evaluate("el => { " + _JS_HELPERS + " return secureOf(el); }"))
-                if not is_secure:
-                    return ExecResult(False, "blocked_by_safety: focus target changed from secure element before typing",
+                if is_secure != self._last_focus_secure:
+                    return ExecResult(False, "blocked_by_safety: focus target security changed since observation",
                                       t0, time.time())
             except Exception:
                 return ExecResult(False, "blocked_by_safety: focus target security could not be verified",
                                   t0, time.time())
         kb = pg.keyboard
         try:
+            if not self._handle_focused(handle):
+                return ExecResult(False, "blocked_by_safety: focus changed before typing", t0, time.time())
             if a.clear:
                 kb.press("Control+A")
+                if not self._handle_focused(handle):
+                    return ExecResult(False, "blocked_by_safety: focus changed during clear", t0, time.time())
                 kb.press("Backspace")
                 if not self._handle_focused(handle):
                     return ExecResult(False, "blocked_by_safety: focus changed during clear", t0, time.time())
             text = a.text or ""
             for i in range(0, len(text), _TYPE_CHUNK):
+                if not self._handle_focused(handle):
+                    return ExecResult(False, "blocked_by_safety: focus changed while typing", t0, time.time())
                 kb.type(text[i:i + _TYPE_CHUNK], delay=5)
                 if not self._handle_focused(handle):
                     return ExecResult(False, "blocked_by_safety: focus changed while typing", t0, time.time())

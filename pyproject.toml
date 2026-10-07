@@ -29,6 +29,7 @@ all = ["gui-agent[web,office,dev]"]
 
 [project.scripts]
 gua = "gua.cli:main"
+gua-desktop-worker = "gua.desktop:main"
 
 [tool.setuptools.packages.find]
 include = ["gua*"]

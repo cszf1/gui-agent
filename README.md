@@ -12,6 +12,17 @@ SRTP 研究代码 **v0.3.1**（v0.3 修复第一轮代码审查的 12 个问题�
 - 审查修复对照（四轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
 - 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)
 
+## 桌面 App（v0.4 开发版）
+
+新增 Windows 优先的聊天桌面 App：在设置里填写 **Base URL、API Key 和模型名称**，然后输入自然语言任务。
+支持本机桌面和独立浏览器操作、执行画面、步骤记录、确认操作、暂停/接管、停止及运行报告。
+界面采用 Electron + React + TypeScript，复用 Python 执行引擎。
+
+- [启动、模型配置和 Windows 打包](desktop/README.md)
+- [架构、语言选择与 ZCode/Codex/Claude/Muse/Grok Bot 官方参考](docs/desktop-app.md)
+
+无 API Key 时可以从界面试运行本地表单。此演示使用预设动作，不代表真实模型自主任务的成功率。
+
 ## 更新日志
 
 ### 未发布（第四轮审查修复）

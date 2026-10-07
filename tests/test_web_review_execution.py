@@ -1,6 +1,7 @@
 """第四轮审查回归：跨源导航文档隔离与观察到的输入目标身份。"""
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -42,6 +43,7 @@ class Handler(BaseHTTPRequestHandler):
                       f'<form method="post" action="/redirect-{status}"><input name="x" value="1">'
                       '<button id="submit">Continue</button></form>')
         elif self.path.startswith("/redirect-"):
+            time.sleep(getattr(self.server, "response_delay", 0))
             status = int(self.path.rsplit("-", 1)[1])
             port = self.server.server_address[1]
             self.send(status, headers=[("Location", f"http://localhost:{port}/landing")])
@@ -85,7 +87,9 @@ def web():
 
 
 @pytest.mark.parametrize("status", [307, 308])
-def test_cross_origin_post_navigation_is_blocked_before_target_request(server, web, status):
+@pytest.mark.parametrize("delay", [0, 0.15])
+def test_cross_origin_post_navigation_is_blocked_before_target_request(server, web, status, delay, monkeypatch):
+    monkeypatch.setattr(server, "response_delay", delay, raising=False)
     server.records.clear()
     port = server.server_address[1]
     env = web(start_url=f"http://127.0.0.1:{port}/start-{status}",

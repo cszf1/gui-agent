@@ -325,6 +325,8 @@ class WebEnv(Env):
         self.blocked_navigations: list[str] = []   # 被白名单拦下的 URL（全部历史）
         self._unreported: list[str] = []           # 尚未通过 ExecResult 报告给 agent 的拦截
         self._blocked_pages: list = []              # 导航被拦的新页面（稍后关闭）
+        self._restore_main_pending = False         # 主导航已 abort；错误页可能尚未提交
+        self._nav_in_flight = 0                    # route.fetch 尚未结束的导航检查
         self._last_good_url: Optional[str] = None
         self.cursor: Optional[tuple[int, int]] = None
         self.fetch_timeout = fetch_timeout          # 白名单预取超时（秒）；超时 = 拦截（fail-closed），不会重发
@@ -374,6 +376,13 @@ class WebEnv(Env):
     def _route(self, route) -> None:
         """浏览器层白名单（任何异常都 fail-closed——abort 并记录安全失败，绝不 continue_）。"""
         url = "?"
+        blocked_before = len(self._unreported)
+        try:
+            navigation = route.request.is_navigation_request()
+        except Exception:
+            navigation = True
+        if navigation:
+            self._nav_in_flight += 1
         try:
             url = route.request.url
             self._route_inner(route)
@@ -383,6 +392,20 @@ class WebEnv(Env):
                 route.abort("blockedbyclient")
             except Exception:  # noqa: BLE001
                 pass
+        finally:
+            if len(self._unreported) > blocked_before:
+                try:
+                    req = route.request
+                    if (req.is_navigation_request() and self.page is not None
+                            and req.frame is self.page.main_frame):
+                        # route.abort can return before Chromium commits its error
+                        # document. Restore explicitly even if page.url still shows
+                        # the old allowed URL; waiting a fixed 60 ms is insufficient.
+                        self._restore_main_pending = True
+                except Exception:  # detached frame / incomplete request metadata
+                    pass
+            if navigation:
+                self._nav_in_flight -= 1
 
     @staticmethod
     def _request_headers(req) -> Optional[dict]:
@@ -525,7 +548,7 @@ class WebEnv(Env):
             u = self.page.url
         except Exception:
             return
-        if u and not u.startswith("chrome-error") and domain_allowed(u, self.allowed_domains):
+        if u and not self._hops and not u.startswith("chrome-error") and domain_allowed(u, self.allowed_domains):
             self._last_good_url = u
 
     def _enforce(self) -> None:
@@ -555,8 +578,19 @@ class WebEnv(Env):
             u = self.page.url
         except Exception:
             return
-        if u.startswith("chrome-error") or not domain_allowed(u, self.allowed_domains):
-            if not u.startswith("chrome-error"):
+        if self._restore_main_pending and not u.startswith("chrome-error") and domain_allowed(u, self.allowed_domains):
+            try:
+                # Wait for the rejected navigation's commit rather than race its
+                # late error document with a recovery goto. A cancelled navigation
+                # can keep the old document, so this wait is bounded.
+                self.page.wait_for_event("framenavigated", predicate=lambda f: f is self.page.main_frame,
+                                         timeout=2000)
+            except Exception:  # no commit / closed page
+                pass
+            u = self.page.url
+        if self._restore_main_pending or u.startswith("chrome-error") or not domain_allowed(u, self.allowed_domains):
+            self._restore_main_pending = False
+            if not u.startswith("chrome-error") and not domain_allowed(u, self.allowed_domains):
                 self._record_block(u, "main page left allowlist")
             ok = False
             if self._last_good_url:
@@ -595,6 +629,8 @@ class WebEnv(Env):
                 self._pw.stop()
         finally:
             self._pw = self._browser = self._ctx = self.page = self.active = None
+            self._restore_main_pending = False
+            self._nav_in_flight = 0
             self._last_focus_page = self._last_focus_frame = self._last_focus_handle = None
             self._last_focus_dom_id = None
             self._last_focus_secure = False
@@ -855,6 +891,13 @@ class WebEnv(Env):
                 self._alive_active().wait_for_timeout(60)   # 让点击触发的导航 / 弹窗事件到达
             except Exception:
                 pass
+            deadline = time.monotonic() + self.fetch_timeout + 1.0
+            while (self._nav_in_flight or self._hops) and not self._restore_main_pending \
+                    and time.monotonic() < deadline:
+                try:
+                    self._alive_active().wait_for_timeout(20)
+                except Exception:
+                    break
             self._enforce()
             if self._unreported:
                 msg = "; ".join(self._unreported)

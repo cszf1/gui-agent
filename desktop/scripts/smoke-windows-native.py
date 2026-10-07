@@ -92,13 +92,14 @@ def main():
             cfg = load_config(root / "configs/default.yaml", {"env": {"platform": "windows"},
                 "safety": {"mode": "deny"}, "reflection": {"enabled": False}, "verification": {"llm": False}})
             agent = build_agent(cfg, env, llms=ScriptedPolicy({}).llms(), task_window=title)
-            obs = agent._observe()
-            assert title in obs.active_window, obs.active_window
-            action, source = agent._resolve(Action("type", target="Name", text="GUI Agent", clear=True), obs)
-            assert source != "grounding_failed", "Native textbox is missing from UIA"
-            result = agent._execute_gated(action, obs)
-            assert result.ok, result.error
-            wait_for(lambda row: row.get("name") == "GUI Agent")
+            for text in ("GUI Agent", "GUI Agent 测试用户"):
+                obs = agent._observe()
+                assert title in obs.active_window, obs.active_window
+                action, source = agent._resolve(Action("type", target="Name", text=text, clear=True), obs)
+                assert source != "grounding_failed", "Native textbox is missing from UIA"
+                result = agent._execute_gated(action, obs)
+                assert result.ok, result.error
+                wait_for(lambda row: row.get("name") == text)
             routes = []
             for name, route in [("Subscribe", "uia_toggle"), ("Pro", "uia_select"), ("Continue", "uia_invoke")]:
                 obs = agent._observe()
@@ -107,9 +108,9 @@ def main():
                 assert result.ok and result.route == route, (result, name)
                 routes.append(result.route)
             actual = wait_for(lambda row: row.get("clicks") == 1 and row.get("checked") and row.get("selected"))
-            assert actual["name"] == "GUI Agent" and actual["clicks"] == 1
-            print("Real Windows WinForms/UIA outcomes verified: focus + type, toggle, select, invoke.")
-            print(json.dumps({"routes": routes, "outcome": actual}, ensure_ascii=False))
+            assert actual["name"] == "GUI Agent 测试用户" and actual["clicks"] == 1
+            print("Real Windows WinForms/UIA outcomes verified: ASCII + Chinese input, toggle, select, invoke.")
+            print(json.dumps({"routes": routes, "outcome": actual}, ensure_ascii=True))
         finally:
             if env is not None:
                 env.close()

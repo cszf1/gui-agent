@@ -20,6 +20,8 @@ v0.3（审查条目 9）：域名白名单在**浏览器层**强制执行，而�
 from __future__ import annotations
 
 import io
+import json
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -33,52 +35,113 @@ from ..urlpolicy import domain_allowed
 from .a11y import finalize, web_raws
 from .base import Env, ExecResult, Observation
 
-SNAPSHOT_JS = r"""
-(maxN) => {
-  const SEL = 'a[href],button,input,select,textarea,summary,[role],[onclick],[tabindex]:not([tabindex="-1"]),[contenteditable="true"],dialog[open],label';
-  const vw = window.innerWidth, vh = window.innerHeight;
-  const out = [];
-  let gid = 0;
+# 公共 JS 片段：元素命名 / 密码判定 / 表单提交按钮（快照与焦点探测共用）
+_JS_HELPERS = r"""
+  const rootOf = (el) => el.getRootNode ? el.getRootNode() : document;
   const nameOf = (el) => {
     const aria = el.getAttribute('aria-label');
     if (aria) return aria;
     const lb = el.getAttribute('aria-labelledby');
-    if (lb) { const n = document.getElementById(lb); if (n) return n.innerText; }
+    if (lb) { const r = rootOf(el); const n = (r.getElementById ? r.getElementById(lb) : null) || document.getElementById(lb);
+              if (n) return n.innerText || n.textContent || ''; }
     if (el.labels && el.labels.length) return el.labels[0].innerText;
+    if (el.tagName === 'INPUT' && ['submit', 'button', 'reset'].includes((el.type || '').toLowerCase()))
+      return el.value || el.name || el.id || '';
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.placeholder || el.name || el.id || '';
     if (el.tagName === 'SELECT') { const o = el.options[el.selectedIndex]; return (el.name || el.id || '') + (o ? ': ' + o.text : ''); }
     if (el.tagName === 'IMG') return el.alt || '';
     const t = (el.innerText || el.textContent || '').trim();
     if (el.matches('dialog,[role=dialog],[role=alertdialog]')) return (el.getAttribute('aria-label') || t.split('\n')[0] || 'dialog');
-    return t || el.title || el.value || '';
+    return t || el.title || (el.tagName === 'INPUT' ? '' : (el.value || '')) || '';
   };
-  for (const el of document.querySelectorAll(SEL)) {
-    if (out.length >= maxN) break;
-    const st = window.getComputedStyle(el);
-    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) continue;
-    const r = el.getBoundingClientRect();
-    if (r.width < 2 || r.height < 2) continue;
-    if (el.tagName === 'LABEL' && el.control) continue;
-    let role = el.getAttribute('role') || '';
-    if (el.tagName === 'DIALOG' || el.getAttribute('aria-modal') === 'true') role = role || 'dialog';
-    // 被其他元素遮挡（例如模态遮罩）的元素标记 covered
-    let covered = false;
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    if (cx >= 0 && cy >= 0 && cx < vw && cy < vh && role !== 'dialog') {
-      const top = document.elementFromPoint(cx, cy);
-      covered = !!top && top !== el && !el.contains(top) && !top.contains(el);
+  const secureOf = (el) => {
+    if ((el.getAttribute('type') || '').toLowerCase() === 'password') return true;
+    try { const st = window.getComputedStyle(el); const ts = st.webkitTextSecurity || st.getPropertyValue('-webkit-text-security');
+          if (ts && ts !== 'none') return true; } catch (e) {}
+    return false;
+  };
+  const submitOf = (el) => {
+    const f = el.form; if (!f) return '';
+    const b = f.querySelector('button:not([type]),button[type=submit],input[type=submit],input[type=image]');
+    return b ? nameOf(b).slice(0, 120) : (f.getAttribute('aria-label') || '');
+  };
+"""
+
+# 元素快照（v0.3.1：穿透 open shadow root；iframe 由 Python 逐个 frame 调用本脚本并加上 frame 偏移，
+# 同源 / 跨源 iframe 一视同仁，见 WebEnv._snapshot）
+SNAPSHOT_JS = r"""
+([maxN, fid]) => {
+""" + _JS_HELPERS + r"""
+  const SEL = 'a[href],button,input,select,textarea,summary,progress,[role],[onclick],[aria-busy="true"],[tabindex]:not([tabindex="-1"]),[contenteditable="true"],dialog[open],label';
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const out = [];
+  const texts = [];
+  let gid = 0;
+  const roots = [document];
+  for (let i = 0; i < roots.length && i < 200; i++) {        // 广度优先遍历所有 open shadow root
+    const r = roots[i];
+    for (const el of r.querySelectorAll('*')) if (el.shadowRoot && el.shadowRoot.mode === 'open') roots.push(el.shadowRoot);
+  }
+  for (const root of roots) {
+    if (root !== document) { for (const c of root.children) { const t = (c.innerText || '').trim(); if (t) texts.push(t); } }
+    for (const el of root.querySelectorAll(SEL)) {
+      if (out.length >= maxN) break;
+      const st = window.getComputedStyle(el);
+      if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      if (el.tagName === 'LABEL' && el.control) continue;
+      let role = el.getAttribute('role') || '';
+      if (el.tagName === 'DIALOG' || el.getAttribute('aria-modal') === 'true') role = role || 'dialog';
+      if (el.tagName === 'PROGRESS') role = role || 'progressbar';
+      let covered = false;
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      if (cx >= 0 && cy >= 0 && cx < vw && cy < vh && role !== 'dialog') {
+        const top = (root.elementFromPoint ? root.elementFromPoint(cx, cy) : document.elementFromPoint(cx, cy));
+        covered = !!top && top !== el && !el.contains(top) && !top.contains(el);
+      }
+      el.setAttribute('data-gua-id', fid + '-' + String(gid));
+      const secure = secureOf(el);
+      let vnow = el.getAttribute('aria-valuenow'), vmax = el.getAttribute('aria-valuemax');
+      if (el.tagName === 'PROGRESS' && el.hasAttribute('value')) { vnow = String(el.value); vmax = String(el.max); }
+      out.push({gid: gid++, tag: el.tagName.toLowerCase(), role: role, type: el.getAttribute('type') || '',
+        name: nameOf(el).slice(0, 120),
+        value: (!secure && el.value !== undefined && el.tagName !== 'BUTTON' && el.tagName !== 'PROGRESS') ? String(el.value) : null,
+        rect: [r.left, r.top, r.right, r.bottom], disabled: !!el.disabled, focused: false,
+        checked: (el.type === 'checkbox' || el.type === 'radio') ? !!el.checked : null, covered: covered,
+        href: el.getAttribute('href') || '', secure: secure, autocomplete: el.getAttribute('autocomplete') || '',
+        form_submit: (el.form ? submitOf(el) : ''), busy: el.getAttribute('aria-busy') === 'true' ? 'true' : '',
+        valuenow: vnow, valuemax: vmax});
     }
-    el.setAttribute('data-gua-id', String(gid));
-    out.push({gid: gid++, tag: el.tagName.toLowerCase(), role: role, type: el.getAttribute('type') || '',
-      name: nameOf(el).slice(0, 120), value: (el.value !== undefined && el.tagName !== 'BUTTON') ? String(el.value) : null,
-      rect: [r.left, r.top, r.right, r.bottom], disabled: !!el.disabled, focused: document.activeElement === el,
-      checked: (el.type === 'checkbox' || el.type === 'radio') ? !!el.checked : null, covered: covered,
-      href: el.getAttribute('href') || ''});
   }
   return {items: out, text: (document.body ? document.body.innerText : '').slice(0, 6000),
+          shadow_text: texts.join('\n').slice(0, 2000),
           title: document.title, url: location.href, vw: vw, vh: vh};
 }
 """
+
+# 安全焦点探测（v0.3.1，第二轮条目 4）：沿 activeElement 穿透 open shadow root；落在 iframe 上时给它打标记，
+# 由 Python 找到对应的子 frame 继续探测（跨源 frame 也可以，Playwright 有特权访问）。与候选元素数量上限无关。
+FOCUS_JS = r"""
+(token) => {
+""" + _JS_HELPERS + r"""
+  let a = document.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+  if (!a || a === document.body || a === document.documentElement) return {kind: 'none'};
+  if (a.tagName === 'IFRAME' || a.tagName === 'FRAME') { a.setAttribute('data-gua-focus-frame', token); return {kind: 'frame'}; }
+  const r = a.getBoundingClientRect();
+  return {kind: 'element', tag: a.tagName.toLowerCase(), role: a.getAttribute('role') || '',
+          type: a.getAttribute('type') || '', name: nameOf(a).slice(0, 120), secure: secureOf(a),
+          autocomplete: a.getAttribute('autocomplete') || '', form_submit: submitOf(a),
+          rect: [r.left, r.top, r.right, r.bottom], disabled: !!a.disabled, editable: !!a.isContentEditable};
+}
+"""
+
+FRAME_OFFSET_JS = r"""(e) => { const cs = window.getComputedStyle(e);
+  return [e.clientLeft + (parseFloat(cs.paddingLeft) || 0), e.clientTop + (parseFloat(cs.paddingTop) || 0)]; }"""
+
+REDIRECT_HTML = """<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">
+<title>redirect</title><script>location.replace({target});</script>"""
 
 _KEYMAP = {"ctrl": "Control", "control": "Control", "cmd": "Meta", "command": "Meta", "win": "Meta", "insert": "Insert",
            "meta": "Meta", "alt": "Alt", "option": "Alt", "shift": "Shift", "enter": "Enter",
@@ -117,7 +180,8 @@ class WebEnv(Env):
     def __init__(self, start_url: str = "about:blank", headless: bool = True,
                  viewport: tuple[int, int] = (1280, 800), browser: str = "chromium",
                  allowed_domains: Optional[list[str]] = None, max_elements: int = 150,
-                 slow_mo: int = 0, block_subresources: bool = False):
+                 slow_mo: int = 0, block_subresources: bool = False, fetch_timeout: float = 30.0,
+                 max_redirect_hops: int = 20):
         self.start_url = start_url
         self.headless = headless
         self.viewport = viewport
@@ -134,6 +198,10 @@ class WebEnv(Env):
         self._blocked_pages: list = []              # 导航被拦的新页面（稍后关闭）
         self._last_good_url: Optional[str] = None
         self.cursor: Optional[tuple[int, int]] = None
+        self.fetch_timeout = fetch_timeout          # 白名单预取超时（秒）；超时 = 拦截（fail-closed），不会重发
+        self.max_redirect_hops = max_redirect_hops
+        self.safety_failures: list[str] = []         # 白名单检查本身失败（预取异常、处理器异常）→ 已 fail-closed 拦截
+        self._hops = 0                               # 连续客户端重定向跳数（防重定向环）
 
     # ---------------------------------------------------------------- 生命周期
     def _ensure(self) -> None:
@@ -163,7 +231,30 @@ class WebEnv(Env):
         if page is not None and page is not self.page:
             self._blocked_pages.append(page)
 
+    def _safety_fail(self, url: str, why: str, page=None) -> None:
+        self.safety_failures.append(f"{url}: {why}")
+        self._record_block(url, f"safety check failed, request aborted: {why}", page)
+
+    def _fetch(self, route, **kw):
+        try:
+            return route.fetch(max_redirects=0, timeout=self.fetch_timeout * 1000, **kw)
+        except TypeError:           # 旧版 Playwright 没有 timeout 参数
+            return route.fetch(max_redirects=0, **kw)
+
     def _route(self, route) -> None:
+        """浏览器层白名单（v0.3.1：任何异常都 fail-closed——abort 并记录安全失败，绝不 continue_）。"""
+        url = "?"
+        try:
+            url = route.request.url
+            self._route_inner(route)
+        except Exception as e:  # noqa: BLE001
+            self._safety_fail(url, f"route handler error {type(e).__name__}: {str(e)[:120]}")
+            try:
+                route.abort("blockedbyclient")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _route_inner(self, route) -> None:
         req = route.request
         url = req.url
         try:
@@ -172,8 +263,8 @@ class WebEnv(Env):
             page = None
         try:
             nav = req.is_navigation_request()
-        except Exception:
-            nav = False
+        except Exception:         # 判断不了是不是导航：按导航处理（保守）
+            nav = True
         if not domain_allowed(url, self.allowed_domains):
             if nav or self.block_subresources:
                 self._record_block(url, "navigation to host outside allowlist" if nav else "subresource", page)
@@ -181,21 +272,62 @@ class WebEnv(Env):
             else:
                 route.continue_()
             return
-        if not nav or urlparse(url).scheme not in {"http", "https"}:
+        if not (nav or self.block_subresources) or urlparse(url).scheme not in {"http", "https"}:
             route.continue_()
             return
-        try:                      # 先取响应、不跟随重定向：3xx 指向白名单外则拦截
-            resp = route.fetch(max_redirects=0)
-        except Exception:
-            route.continue_()
+        # 先取响应、不跟随重定向（请求只发送这一次：之后用 fulfill 交给浏览器，不再 continue_）
+        try:
+            resp = self._fetch(route)
+        except Exception as e:  # noqa: BLE001  — 超时 / 连接失败：不知道服务器是否已收到，绝不重发
+            self._safety_fail(url, f"allowlist prefetch failed ({type(e).__name__}); not retried", page)
+            route.abort("blockedbyclient")
             return
-        if 300 <= resp.status < 400:
+        hops = 0
+        method = (getattr(req, "method", "GET") or "GET").upper()
+        while 300 <= resp.status < 400:
             loc = resp.headers.get("location", "")
             target = urljoin(url, loc) if loc else ""
-            if target and not domain_allowed(target, self.allowed_domains):
+            if not target:
+                break
+            if not domain_allowed(target, self.allowed_domains):
                 self._record_block(target, f"redirect from {url}", page)
                 route.abort("blockedbyclient")
                 return
+            keep_method = resp.status in (307, 308) and method != "GET"
+            if nav and not keep_method:
+                # Playwright 不会拦截浏览器自己跟随的重定向（v0.3 多跳重定向因此可绕过）：改成客户端跳转，
+                # 下一跳是一个新的导航请求，会再次进入本处理器逐跳检查；原响应头（含 Set-Cookie）保留。
+                self._hops += 1
+                if self._hops > self.max_redirect_hops:
+                    self._safety_fail(target, f"more than {self.max_redirect_hops} redirect hops", page)
+                    route.abort("blockedbyclient")
+                    return
+                headers = {k: v for k, v in resp.headers.items()
+                           if k.lower() not in {"location", "content-length", "content-type", "content-encoding",
+                                                "transfer-encoding"}}
+                route.fulfill(status=200, headers=headers, content_type="text/html; charset=utf-8",
+                              body=REDIRECT_HTML.format(target=json.dumps(target)))
+                return
+            # 子资源 / 307·308 非 GET：在这里逐跳跟随（每跳检查白名单），最后把最终响应交给浏览器
+            hops += 1
+            if hops > self.max_redirect_hops:
+                self._safety_fail(target, f"more than {self.max_redirect_hops} redirect hops", page)
+                route.abort("blockedbyclient")
+                return
+            try:
+                kw = {"url": target}
+                if keep_method:
+                    kw.update(method=method, post_data=req.post_data_buffer)
+                else:
+                    kw.update(method="GET")
+                resp = self._fetch(route, **kw)
+            except Exception as e:  # noqa: BLE001
+                self._safety_fail(target, f"redirect hop fetch failed ({type(e).__name__})", page)
+                route.abort("blockedbyclient")
+                return
+            url = target
+        if nav:
+            self._hops = 0
         route.fulfill(response=resp)
 
     def _remember_good(self) -> None:
@@ -236,11 +368,18 @@ class WebEnv(Env):
         if u.startswith("chrome-error") or not domain_allowed(u, self.allowed_domains):
             if not u.startswith("chrome-error"):
                 self._record_block(u, "main page left allowlist")
+            ok = False
             if self._last_good_url:
                 try:
                     self.page.goto(self._last_good_url)
-                except Exception:
+                    ok = True
+                except Exception:  # noqa: BLE001
                     pass
+            if not ok:            # v0.3.1：回不到合法页面也不能停在白名单外 → about:blank（fail-closed）
+                try:
+                    self.page.goto("about:blank")
+                except Exception:  # noqa: BLE001
+                    self.safety_failures.append(f"{u}: could not leave off-allowlist page")
         else:
             self._remember_good()
 
@@ -273,27 +412,132 @@ class WebEnv(Env):
             self.active = self.page
         return self.active
 
+    def _frame_offset(self, frame) -> Optional[tuple[float, float]]:
+        """子 frame 内容区左上角在主视口中的坐标（bounding_box 已是主视口坐标，再加边框 / 内边距）。"""
+        fe = frame.frame_element()
+        box = fe.bounding_box()
+        if not box:
+            return None
+        try:
+            bx, by = fe.evaluate(FRAME_OFFSET_JS)
+        except Exception:  # noqa: BLE001
+            bx = by = 0.0
+        return box["x"] + bx, box["y"] + by
+
+    def _snapshot(self, pg) -> tuple[list[dict], str]:
+        """逐个 frame 抽取元素（主 frame + 同源 / 跨源 iframe），矩形换算到主视口坐标。"""
+        items: list[dict] = []
+        texts: list[str] = []
+        for fi, frame in enumerate(pg.frames):
+            try:
+                off = (0.0, 0.0) if frame is pg.main_frame else self._frame_offset(frame)
+                if off is None:
+                    continue
+                snap = frame.evaluate(SNAPSHOT_JS, [self.max_elements * 2, fi])
+            except Exception:  # noqa: BLE001  — frame 正在跳转 / 已分离
+                if frame is pg.main_frame:
+                    raise
+                continue
+            for it in snap["items"]:
+                l, t, r, b = it["rect"]
+                it["rect"] = [l + off[0], t + off[1], r + off[0], b + off[1]]
+                if fi:
+                    it["frame"] = str(fi)
+            items += snap["items"]
+            texts += [x for x in (snap.get("text", ""), snap.get("shadow_text", "")) if x]
+        return items, "\n".join(texts)[:8000]
+
+    def _probe_frame(self, frame, token: str) -> dict:
+        return frame.evaluate(FOCUS_JS, token)
+
+    def _probe_focus(self, pg) -> tuple[Optional[dict], str]:
+        """安全焦点探测：返回 (焦点元素描述或 None, "known" | "none" | "unknown")。任何异常 → unknown。"""
+        try:
+            frame, off = pg.main_frame, (0.0, 0.0)
+            for _ in range(10):
+                token = f"f{time.time_ns()}"
+                info = self._probe_frame(frame, token)
+                kind = (info or {}).get("kind")
+                if kind == "none":
+                    return None, "none"
+                if kind == "element":
+                    l, t, r, b = info["rect"]
+                    info["rect"] = [l + off[0], t + off[1], r + off[0], b + off[1]]
+                    return info, "known"
+                if kind != "frame":
+                    return None, "unknown"
+                child = None
+                for ch in frame.child_frames:
+                    try:
+                        if ch.frame_element().get_attribute("data-gua-focus-frame") == token:
+                            child = ch
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if child is None:
+                    return None, "unknown"
+                o = self._frame_offset(child)
+                if o is None:
+                    return None, "unknown"
+                frame, off = child, o
+            return None, "unknown"
+        except Exception:  # noqa: BLE001
+            return None, "unknown"
+
+    @staticmethod
+    def _apply_focus(elems: list, info: Optional[dict], img_size) -> None:
+        """把探测到的焦点标到元素列表上（匹配不到就追加一个元素；与候选数量上限无关）。"""
+        for e in elems:
+            e.focused = False
+        if not info:
+            return
+        from .base import UIElement
+        raw = web_raws([info])[0]
+        l, t, r, b = (int(round(v)) for v in info["rect"])
+        match = None
+        for e in elems:
+            el, et, er, eb = e.rect
+            if abs(el - max(0, l)) <= 2 and abs(et - max(0, t)) <= 2 and e.name == raw["name"][:100].strip():
+                match = e
+                break
+        if match is None:
+            w, h = img_size
+            off = r <= 0 or b <= 0 or l >= w or t >= h
+            match = UIElement(len(elems), re.sub(r"\s+", " ", raw["name"]).strip()[:100], raw["role"],
+                              (max(0, l), max(0, t), min(w, max(r, l + 1)), min(h, max(b, t + 1))),
+                              enabled=raw["enabled"], native_role=raw["native_role"], attrs=dict(raw["attrs"]),
+                              offscreen=off)
+            elems.append(match)
+        match.focused = True
+        match.is_password = match.is_password or raw["is_password"]
+        if match.is_password:
+            match.value = None
+        if raw["attrs"].get("form_submit"):
+            match.attrs["form_submit"] = raw["attrs"]["form_submit"]
+
     def observe(self, with_elements: bool = True) -> Observation:
         self._ensure()
         self._enforce()
         pg = self._alive_active()
         img = Image.open(io.BytesIO(pg.screenshot(type="png"))).convert("RGB")
         title, url, text, elems = "", "", "", []
+        focus_state = ""
         try:
             title, url = pg.title(), pg.url
         except Exception:
             pass
         if with_elements:
             try:
-                snap = pg.evaluate(SNAPSHOT_JS, self.max_elements * 2)
-                raws = web_raws(snap["items"])
-                for r, it in zip(raws, snap["items"]):
+                items, text = self._snapshot(pg)
+                raws = web_raws(items)
+                for r, it in zip(raws, items):
                     if it.get("covered"):
                         r["attrs"]["covered"] = "true"
                 elems, _ = finalize(raws, img.size, self.max_elements, include_text=False)
-                text = snap.get("text", "")
             except Exception as e:  # 页面跳转中
                 text = f"(snapshot failed: {type(e).__name__})"
+            info, focus_state = self._probe_focus(pg)
+            self._apply_focus(elems, info, img.size)
         wins = []
         for p in self._ctx.pages:
             try:
@@ -302,7 +546,8 @@ class WebEnv(Env):
                 pass
         return Observation(screenshot=img, timestamp=time.time(), screen_size=img.size, dpi_scale=1.0,
                            active_window=title or url, active_process=urlparse(url).netloc or url[:40],
-                           windows=wins, elements=elems, platform="web", url=url, text=text, cursor=self.cursor)
+                           windows=wins, elements=elems, platform="web", url=url, text=text, cursor=self.cursor,
+                           focus_state=focus_state)
 
     # ---------------------------------------------------------------- 执行
     def _domain_ok(self, url: str) -> bool:

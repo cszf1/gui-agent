@@ -64,7 +64,8 @@ class UIElement:
         return l <= x <= r and t <= y <= b
 
     def brief(self) -> str:
-        v = f" value={self.value!r}" if self.value else ""
+        # v0.3.1（第二轮条目 6）：公共序列化层兜底——密码框的值永不输出（转换器已清空，这里再防一次）
+        v = f" value={self.value!r}" if self.value and not self.is_password else ""
         flags = ("" if self.enabled else " disabled") + (" focused" if self.focused else "") + \
                 (" offscreen" if self.offscreen else "") + (" password" if self.is_password else "") + \
                 ("" if self.checked is None else (" checked" if self.checked else " unchecked"))
@@ -85,6 +86,9 @@ class Observation:
     url: str = ""                           # web 专用
     text: str = ""                          # 可见文本（Web innerText / 无障碍树里的文字），供 L1 规则核验
     cursor: Optional[tuple[int, int]] = None  # 当前鼠标位置（截图像素），未知为 None（Claude 拖拽起点用）
+    # v0.3.1：键盘焦点探测结果。"known"（elements 里有 focused 元素）| "none"（明确没有可输入焦点）|
+    # "unknown"（无法确定，例如跨源 iframe 探测失败）| ""（平台未报告）。安全闸门与脱敏据此保守处理，见 gua.sensitive。
+    focus_state: str = ""
 
     def element(self, eid: int) -> Optional[UIElement]:
         for e in self.elements:
@@ -98,7 +102,8 @@ class Observation:
 
     def all_text(self) -> str:
         parts = [self.text, self.active_window]
-        parts += [e.name for e in self.elements] + [e.value or "" for e in self.elements]
+        parts += [e.name for e in self.elements]
+        parts += [e.value or "" for e in self.elements if not e.is_password]   # 密码值兜底不输出
         return "\n".join(p for p in parts if p)
 
     def dialogs(self) -> list[UIElement]:

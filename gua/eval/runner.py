@@ -144,6 +144,7 @@ def run_task(cfg: dict, task: dict, env, runs_root: str = "runs", rep: int = 0, 
         "seconds": round(res.seconds, 1) if res else 0, "disturbed": bool(dist and dist.fired_at),
         "error": err, "run_dir": str(log.dir), "policy": policy,
     }
+    row = log.scrub(row)          # v0.3.1：评测结果行（summary 文件 / stdout）也经过秘密清洗
     log.meta(task={k: v for k, v in task.items() if k != "_dir"}, platform=task.get("platform"),
              result=asdict(res) if res else None, eval=row)
     log.close(report=True)

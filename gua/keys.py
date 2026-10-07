@@ -26,9 +26,15 @@ _ALIAS = {
     "return": "enter", "kp_enter": "enter", "⏎": "enter", "ret": "enter",
     "pgup": "pageup", "page_up": "pageup", "prior": "pageup", "pgdn": "pagedown", "page_down": "pagedown",
     "next": "pagedown", "ins": "insert", "spacebar": "space", " ": "space",
+    # v0.3.1：激活键的平台别名（Android keycode 名 / 小键盘回车）
+    "keycode_enter": "enter", "keycode_numpad_enter": "enter", "numpad_enter": "enter", "numpadenter": "enter",
+    "kpenter": "enter", "keycode_space": "space", "keycode_dpad_center": "dpad_center", "center": "dpad_center",
+    "dpad_centre": "dpad_center",
     "arrowup": "up", "arrowdown": "down", "arrowleft": "left", "arrowright": "right",
 }
 MODIFIERS = {"ctrl", "alt", "shift", "meta"}
+# 按下即“激活焦点元素”的键（按钮 / 链接 / 表单提交）；Android 数字 keycode：66 ENTER、23 DPAD_CENTER、62 SPACE、160 NUMPAD_ENTER
+ACTIVATION_KEYS = {"enter", "space", "dpad_center", "66", "23", "62", "160"}
 
 
 def canonical_key(k: str) -> str:

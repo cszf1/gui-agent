@@ -38,7 +38,7 @@ KEYCODES = {"back": 4, "home": 3, "enter": 66, "return": 66, "delete": 112, "bac
             "tab": 61, "esc": 111, "escape": 111, "menu": 82, "search": 84, "up": 19, "down": 20,
             "left": 21, "right": 22, "space": 62, "power": 26, "volume_up": 24, "volume_down": 25,
             "app_switch": 187, "recent": 187, "pageup": 92, "pagedown": 93, "ctrl": 113, "alt": 57,
-            "shift": 59, "meta": 117, "insert": 124, "f1": 131, "f4": 134}
+            "shift": 59, "meta": 117, "dpad_center": 23, "insert": 124, "f1": 131, "f4": 134}
 _KEYCODE_NAME = re.compile(r"^KEYCODE_[A-Z0-9_]+$")
 
 

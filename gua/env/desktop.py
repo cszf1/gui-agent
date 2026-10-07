@@ -137,10 +137,12 @@ def clipboard_type(text: str, platform: str) -> None:
     except Exception:
         pass
     pyperclip.copy(text)
-    pyautogui.hotkey("command" if platform == "macos" else "ctrl", "v")
-    time.sleep(0.15)
-    if old is not None:
+    try:
+        pyautogui.hotkey("command" if platform == "macos" else "ctrl", "v")
+        time.sleep(0.15)
+    finally:
+        # v0.3.1：无论如何都不把输入的文字（可能是密码）留在系统剪贴板上：恢复旧内容，读不到旧内容就清空
         try:
-            pyperclip.copy(old)
-        except Exception:
+            pyperclip.copy(old if old is not None else "")
+        except Exception:  # noqa: BLE001
             pass

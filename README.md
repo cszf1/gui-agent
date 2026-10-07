@@ -1,6 +1,7 @@
 # gui-agent（`gua`）：跨平台、可验证执行与失败恢复的 GUI Agent
 
-SRTP 研究代码 **v0.3**（修复一轮代码审查发现的 12 个问题，见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)）。
+SRTP 研究代码 **v0.3.1**（v0.3 修复第一轮代码审查的 12 个问题；v0.3.1 修复第二轮审查的 7 个问题及自查发现的同类问题，
+见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)）。
 前身是只支持 Windows 的 `win-gui-agent`（`wga`）。研究方向 A：**执行验证与失败恢复**
 （时间失配：页面没刷新就判断、窗口被最小化/抢焦点、目标在屏幕外……）。
 
@@ -8,10 +9,51 @@ SRTP 研究代码 **v0.3**（修复一轮代码审查发现的 12 个问题，�
 **Windows / macOS / Linux(X11) / Android(adb) / Web(Playwright) / Mock**。
 
 - 设计说明：[docs/design.md](docs/design.md)
-- v0.3 审查修复对照（审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
+- 审查修复对照（两轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
 - 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)
 
 ## 更新日志
+
+### v0.3.1（第二轮代码审查修复）
+
+每一条都先写回归测试、确认它在 v0.3.0 上失败，再修复（新增 59 个测试在 v0.3.0 上 56 个失败；通过的 3 个是对照用例，
+见 docs/review-fixes.md）。
+
+**高优先级**
+1. **键盘激活危险按钮不再绕过确认**：安全闸门对每个动作求“实际被激活的目标”——指针动作的目标元素；Enter / Space /
+   DPAD_CENTER（hotkey、key_down）、`type(submit=True)`、文字里含换行、往按钮里打字 → 当前焦点元素（文本框则取所在表单的提交按钮）。
+   同一条危险目标规则；拒绝签名按目标记录，点击被拒后用回车 / 空格 / 提交激活同一按钮会直接拒绝、不再询问。
+   焦点无法确定（或同一观察上已执行过可能移动焦点的动作，例如 Tab）时按激活键 → 保守确认。
+2. **密码不再出现在重复拒绝日志 / 确认终端**：新增 `gua/sensitive.py`，统一的安全摘要（`safe_short` / `Action.safe_short()`）
+   只由**输入目标**决定是否脱敏（密码框、焦点未知、平台未报告焦点），与哪条安全规则先命中无关；确认回调与 `cli_confirm`
+   只收到脱敏后的动作；拒绝签名里的输入文字只存哈希。
+3. **只有执行器持有原文**：步骤记忆、Actor / 反思 / L2 验证请求、安全日志、`steps.jsonl` / `meta.json` / HTML 回放、
+   `RunResult`、评测结果行都用安全摘要；已知秘密登记到 `Scrubber` 做最后一道清洗（执行层报错回显、模型思考、证据文字）。
+   新增可选 `AgentConfig.secrets`：模型只写 `<secret>名字</secret>`，执行器在发往环境前才替换，模型从头到尾看不到原文；
+   配置里用 `agent.secrets_env: {名字: 环境变量名}` 从环境变量读取（配置文件不写明文）。
+   回归测试截获全部假模型请求 + 日志文件 + 回放 HTML + stdout/stderr，断言秘密字符串一次都不出现。
+4. **Web 嵌套密码框可见**：元素快照穿透 open shadow root，并逐个 frame（同源 / 跨源 iframe）抽取、换算到主视口坐标；
+   独立的安全焦点探测沿 `activeElement` 穿透 shadow root 与 iframe，与候选数量上限无关；焦点无法确定时
+   `Observation.focus_state="unknown"` → 输入一律确认 + 脱敏。
+5. **Web 白名单 fail-closed**：预取异常（超时等）→ abort 并记录 `WebEnv.safety_failures`，绝不 `continue_()`（也就不会重发
+   可能有副作用的请求）；路由处理器任何异常都 abort；无法判断是否导航时按导航处理。**多跳重定向**：v0.3.0 中浏览器自己跟随的
+   第二跳不经过路由（白名单内 302 → 白名单内 302 → 白名单外，会真的请求到白名单外主机，已用测试复现），现改为客户端跳转逐跳检查
+   （保留 Set-Cookie），307/308 非 GET 由处理器逐跳跟随；新增 `fetch_timeout`、`max_redirect_hops`。
+
+**中优先级**
+
+6. **Android / AX 密码值统一清除**：Android 密码节点的 `text` 不再作为名字 / 值（父容器也不再用它命名），AX 安全输入框不读 `AXValue`，
+   AT-SPI / Web 同样处理；公共层（`finalize`、`UIElement.brief()`、`Observation.all_text()`）对 `is_password` 再清一次。
+7. **收尾核验不把忙碌 / 未稳定当完成**：子目标与任务收尾核验不再丢弃 `_settle()` 的稳定标志，未稳定或仍有忙碌指示
+   （未满的 progressbar、aria-busy、新出现的 Loading… 文字）→ 等待复查 `busy_rechecks` 次，仍不稳定 → `uncertain`，从不 `success`；
+   期望文本在子目标 / 任务开始时就已可见且之后屏幕没有变化 → 视为旧证据，不能单独定论（交给 L2，L2 不可用则 uncertain）；
+   步骤级规则同样忽略动作前就存在的期望文本。
+
+**自查发现的同类问题**（详见 docs/review-fixes.md）：安全判定本身抛异常时 fail-closed；拖到废纸篓 / 回收站需要确认；
+密码框里逐键输入（单字符 hotkey）脱敏；CSS `-webkit-text-security` 与 `autocomplete=current-password/new-password/one-time-code`
+视为密码框；`input[type=submit]` 的名字取自 value（之前危险提交按钮没有名字，规则看不到）；剪贴板粘贴后不把输入文字留在剪贴板上；
+各平台的进度条在元素转换时被丢弃（忙碌规则只能靠文字），现保留；子资源拦截开启时子资源重定向也逐跳检查；
+白名单外主页面回不到合法 URL 时转到 `about:blank`；焦点元素不受候选数量上限影响（所有平台）。
 
 ### v0.3（代码审查修复）
 
@@ -244,16 +286,24 @@ v0.3 起每个配置都先被推导成一个 `CapabilityPolicy`（`gua/policy.py
 ```bash
 pytest -q                 # 全部（没有 playwright/chromium 时 web 集成测试自动跳过）
 pytest -q -m "not web"    # 只跑 mock / fixture / 离线后端测试（CI 三平台矩阵）
+python -B -m pytest -q -p no:cacheprovider               # 不写字节码、不用 pytest 缓存（审查者的 Windows 跑法）
+GUA_TEST_NO_PLAYWRIGHT=1 python -B -m pytest -q -p no:cacheprovider   # 模拟没装 Playwright：3 个 Web 模块整体跳过
 ```
 
-v0.3 在沙箱（Linux aarch64，Python 3.12，Playwright + Chromium headless shell）中的结果：**130 passed**
+v0.3.1 在沙箱（Linux aarch64，Python 3.12，Playwright 1.63 + Chromium headless）中：**189 passed**
+（v0.3 的 130 个 + 第二轮新增 59 个）；`GUA_TEST_NO_PLAYWRIGHT=1` 时 **166 passed, 3 skipped**（跳过的是
+`test_web_allowlist.py`、`test_web_integration.py`、`test_web_review_v031.py` 三个模块）。Windows 上没有实际运行过
+v0.3.1 的测试；测试本身不依赖 POSIX 路径 / shell，且 `test_review_v031.py` 里的白名单单元测试用假 route，不需要 Playwright。
+
+v0.3 当时的结果：**130 passed**
 （v0.2 的 52 个 + v0.3 新增的 78 个审查回归测试，含参数化用例；其中 `tests/test_web_allowlist.py` 用真实 Chromium + 本地 HTTP 服务器）。
 GitHub Actions：`core` 任务在 ubuntu / windows / macos × Python 3.10 / 3.12 上跑 `-m "not web"`；`web` 任务在 ubuntu 上装 Chromium 跑全部测试 + `gua demo`。
 
 ## 哪些验证过、哪些没有（诚实说明）
 
-| 部分 | 状态（v0.3） |
+| 部分 | 状态（v0.3.1） |
 |---|---|
+| 敏感输入 / 安全闸门（v0.3.1） | ✅ 键盘激活目标、焦点未知、重复拒绝、全出口脱敏（假模型请求 + 日志 + 回放 + 终端截获）都有回归测试；Web 的 shadow DOM / 同源 / 跨源 iframe 密码焦点、表单提交目标、键盘激活“Delete account”在真实 Chromium 上验证；桌面 / Android 只用 fixture 验证 |
 | 核心逻辑（动作解析与校验、坐标变换链、验证规则、收尾核验、恢复决策、记忆、反思、安全闸门、预算硬上限、能力策略、日志/报告、CLI） | ✅ mock 单元测试 + 审查回归测试（含随机往返 / 模糊测试） |
 | **Web 后端** | ✅ 沙箱内真实 Chromium 端到端：6 个本地任务在更严格的收尾核验下仍全部通过，等待 / 弹窗 / 滚动 / 抢焦点 4 条恢复路径都真实触发；`raw_loop` 复现“错误宣告完成”；安全闸门拦下“Delete account”；**域名白名单在浏览器层拦截链接 / 新标签页 / 302 重定向 / JS 跳转 / window.open**（本地 HTTP 服务器验证白名单外主机收不到请求） |
 | Windows 后端 | 🟡 命令构造（启动应用不再经过 cmd）、UIA → 元素转换（含 IsPassword）、fail-safe 传播用假模块在 Linux 上测过；**v0.2 / v0.3 都未在真机复测** |
@@ -270,10 +320,28 @@ GitHub Actions：`core` 任务在 ubuntu / windows / macos × Python 3.10 / 3.12
 未实现 MCP / 代码动作 / OmniParser。v0.3 新增的限制说明：
 
 - token / 成本上限只能在调用返回后才知道用量，所以语义是“累计达到上限后拒绝之后所有调用”，最后一次调用可能让累计值略超上限（不超过单次用量）。
-- 拒绝的“同一动作”按签名判断（指针动作 = 类型 + 目标元素名；快捷键 = 规范键集合；输入 = 文本）。同一个危险按钮换一种描述
-  但反查不到元素名时可能被视为新动作，会再次询问（不会自动执行）。
+- 拒绝的“同一动作”按签名判断（v0.3.1：激活类动作 = 被激活的目标名，点击 / 回车 / 空格 / 提交共享；快捷键 = 规范键集合；
+  输入 = 文本哈希）。同一个危险按钮换一种描述但反查不到元素名时可能被视为新动作，会再次询问（不会自动执行）。
 - Web 白名单拦截主页面导航时，Chromium 会先显示拦截错误页，agent 随后回到最后一个合法 URL（页面会重新加载，未提交的表单内容会丢失）。
 - Claude computer-use 的光标位置：Web 与桌面后端在观察里提供真实光标；其他情况用 actor 自己跟踪的上一次指针落点。
+
+v0.3.1 新增 / 仍未完全解决的限制：
+
+- **桌面 / Android 的焦点只来自无障碍树**（UIA HasKeyboardFocus、AXFocused、AT-SPI focused、uiautomator focused），没有像 Web 那样的
+  独立焦点探测；树里没有焦点元素时状态是“未报告”：此时普通打字放行但在所有输出里脱敏，按 Enter / Space 等激活键需要确认。
+  MockEnv 声明“没有可聚焦控件”（`focus_state="none"`）。
+- 激活目标是“焦点元素 / 表单提交按钮”的近似：页面自己用 JS 监听键盘（例如全局快捷键、Enter 触发任意脚本）时，真正被触发的操作
+  安全闸门看不到；Web 以外的平台不知道文本框所属表单的提交按钮是谁（只检查文本框本身的名字）。
+- 秘密清洗器（Scrubber）只能清洗**已知**秘密：长度 < 4 的字符串不登记；`ask_user` 里用户亲口回答的内容按设计交给模型；
+  任务描述里直接写出的密码会出现在规划 / Actor 请求中——请改用 `AgentConfig.secrets` 占位符。截图里的明文（例如“显示密码”
+  勾选后）无法脱敏。
+- Android 输入走 `adb shell input text` / ADBKeyboard 广播，明文会短暂出现在设备进程参数 / 广播里（其他应用可监听广播），这是
+  adb 通道本身的限制。
+- Web：closed shadow root 无法穿透；跨源 iframe 依赖 Playwright 的 frame 访问，失败时按“焦点未知”保守处理；白名单内的
+  3xx 改为客户端跳转后，“后退”会跳过重定向页（与浏览器原生行为略有差异），307/308 的非 GET 请求由处理器跟随，浏览器地址栏
+  停留在第一跳 URL。
+- 旧证据判定用“期望文本在基线里已存在 + 屏幕（文字 / 像素）没有变化”近似；目标本来就已满足、不需要任何操作的子目标在没有 L2 时
+  会得到 uncertain（偏保守）；页面上常驻的进度条（非满、无数值）会让收尾核验一直是 uncertain。
 
 ## 下一步
 

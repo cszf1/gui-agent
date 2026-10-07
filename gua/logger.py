@@ -6,6 +6,9 @@ runs/<run_id>/
   steps.jsonl        每步一行（kind = plan | step | milestone | replan | reflection | safety | ask_user | final_check）
   shots/0003_before.png, 0003_after.png
   report.html        `gua replay runs/<run_id>` 或运行结束时自动生成
+
+v0.3.1：scrubber（gua.sensitive.Scrubber）是落盘前的最后一道防线——GUIAgent 把已知秘密登记进去，
+steps.jsonl / meta.json 写入前统一清洗，report.html 由这两个文件生成，因此同样不含秘密。
 """
 from __future__ import annotations
 
@@ -38,6 +41,11 @@ class TrajectoryLogger:
         self.max_side = max_side
         self._f = open(self.dir / "steps.jsonl", "a", encoding="utf-8")
         self._meta: dict[str, Any] = {}
+        from .sensitive import Scrubber
+        self.scrubber = Scrubber()
+
+    def scrub(self, obj: Any) -> Any:
+        return self.scrubber.scrub_obj(obj)
 
     def shot(self, step: int, tag: str, img: Image.Image) -> Optional[str]:
         if not self.save_images or img is None:
@@ -51,13 +59,14 @@ class TrajectoryLogger:
 
     def step(self, **rec: Any) -> None:
         rec.setdefault("t", time.time())
-        self._f.write(json.dumps(rec, ensure_ascii=False, default=_jsonable) + "\n")
+        line = self.scrubber.scrub(json.dumps(rec, ensure_ascii=False, default=_jsonable))
+        self._f.write(line + "\n")
         self._f.flush()
 
     def meta(self, **meta: Any) -> None:
         self._meta.update(meta)
-        (self.dir / "meta.json").write_text(json.dumps(self._meta, ensure_ascii=False, indent=2, default=_jsonable),
-                                            encoding="utf-8")
+        txt = self.scrubber.scrub(json.dumps(self._meta, ensure_ascii=False, indent=2, default=_jsonable))
+        (self.dir / "meta.json").write_text(txt, encoding="utf-8")
 
     def close(self, report: bool = True) -> Optional[Path]:
         if not self._f.closed:

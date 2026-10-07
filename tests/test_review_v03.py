@@ -558,7 +558,9 @@ def test_i08_control_sequences_in_typed_text():
     g = SafetyGuard()
     for t in ["abc\x7f", "\x1b[3~", "x\x04", "a\x08\x08"]:
         assert g.assess(Action("type", text=t)).verdict == "confirm", repr(t)
-    assert g.assess(Action("type", text="hello\nworld\t!")).verdict == "allow"
+    # v0.3.1：换行 = 回车激活，需要知道焦点目标；焦点是普通文本框时放行（无观察时焦点未知 → 确认，见 test_review_v031）
+    box = UIElement(0, "Notes", "textbox", (0, 0, 100, 30), focused=True)
+    assert g.assess(Action("type", text="hello\nworld\t!"), _obs([box])).verdict == "allow"
 
 
 def test_i08_canonical_key_names_and_android_delete():

@@ -226,9 +226,15 @@ class Action:
         return d
 
     def short(self) -> str:
+        """原文摘要：**只用于执行器内部 / 测试**。凡是写日志、进提示词、打印到终端，一律用 safe_short()。"""
         d = self.to_dict()
         d.pop("reason", None)
         return json.dumps(d, ensure_ascii=False)
+
+    def safe_short(self, obs=None, state: Optional[str] = None) -> str:
+        """安全摘要（v0.3.1）：输入目标是密码框 / 未知 / 未报告时 typed text 被替换为 <redacted>。"""
+        from .sensitive import safe_short
+        return safe_short(self, obs, state)
 
 
 def parse_action(obj: dict[str, Any], default_coord_space: str = "pixel") -> Action:

@@ -1,6 +1,8 @@
 """从 YAML 构建整套 agent。消融实验只需要换配置文件；模型配置可以单独一个文件叠加（--model）。"""
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 from typing import Any, Optional
 
@@ -127,7 +129,9 @@ def build_agent(cfg: dict, env: Env, logger: Optional[TrajectoryLogger] = None,
                        verify_goals=policy.goal_check, final_check=policy.final_check, final_l2=policy.final_l2,
                        on_uncertain=policy.on_uncertain, max_budget_calls=a.get("max_budget_calls", 200),
                        max_tokens=a.get("max_tokens"), max_cost_usd=a.get("max_cost_usd"),
-                       max_seconds=a.get("max_seconds"), platform=platform)
+                       max_seconds=a.get("max_seconds"), platform=platform,
+                       # v0.3.1：秘密只从环境变量读取（agent.secrets_env: {名字: 环境变量名}），配置文件里不写明文
+                       secrets={n: os.environ[v] for n, v in (a.get("secrets_env") or {}).items() if os.environ.get(v)})
     act = cfg.get("actor") or {}
     kind = act.get("kind", "json")
     act_pixels = act.get("max_pixels", max_pixels)

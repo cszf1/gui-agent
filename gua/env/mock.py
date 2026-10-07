@@ -84,7 +84,8 @@ class MockEnv(Env):
         txt = " ".join(f"{k}={v}" for k, v in self.state.items())
         return Observation(self._render(), time.time(), self.size, 1.0,
                            self.title if self.focused else "Other Window", "mock.exe",
-                           [self.title, "Other Window"], elems, platform="mock", text=txt)
+                           [self.title, "Other Window"], elems, platform="mock", text=txt,
+                           focus_state="none")   # 假桌面没有可聚焦控件：键盘输入落在“文档”上
 
     def execute(self, a: Action) -> ExecResult:
         t0 = time.time()

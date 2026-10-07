@@ -14,11 +14,18 @@ v0.3 审查修复（详见 docs/review-fixes.md）：
 5. actor 输出解析 / 校验失败（ActionParseError 等）一律变成反馈交还模型，不会让运行崩溃。
 6. 各组件读取同一个 CapabilityPolicy。
 10. UserAbort（pyautogui fail-safe 等人工紧急停止）→ 终止状态 "user_abort"。
+
+v0.3.1 第二轮审查修复：
+- 只有执行器持有 typed text 原文（条目 2 / 3）：步骤记忆、Actor / 反思 / L2 请求、安全日志、轨迹日志、
+  HTML 回放、RunResult 都使用安全摘要（gua.sensitive）；已知秘密登记到 Scrubber 做最后一道清洗（执行层报错
+  回显、模型思考、证据文字）。可选 AgentConfig.secrets：模型只输出 <secret>名字</secret>，执行器在发往环境前替换。
+- 子目标 / 任务收尾核验不再丢弃 _settle() 的稳定标志（条目 7）：未稳定或仍忙碌 → 再等待并复查
+  busy_rechecks 次，仍不稳定 → uncertain（绝不 success）；子目标 / 任务开始时的观察作为旧证据基线。
 """
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 from .actions import Action, ActionParseError
@@ -34,6 +41,7 @@ from .policy import CapabilityPolicy
 from .recovery import RecoveryPolicy, Strategy
 from .reflection import Reflector
 from .safety import SafetyGuard
+from .sensitive import SECRET_RE, Scrubber, is_sensitive_type, resolve_secrets, safe_view
 from .verify import Check, Verdict, Verifier
 
 TERMINAL_STATUSES = {"done", "fail", "uncertain", "step_limit", "budget_exhausted", "time_limit", "user_abort"}
@@ -56,6 +64,8 @@ class AgentConfig:
     max_cost_usd: Optional[float] = None
     max_seconds: Optional[float] = None
     platform: str = "mock"
+    secrets: dict = field(default_factory=dict, repr=False)   # 名字 → 秘密；模型只看到名字（<secret>名字</secret>）
+    busy_rechecks: int = 2           # 收尾核验时界面未稳定 / 忙碌：最多再等待复查几次，之后判 uncertain
 
 
 @dataclass
@@ -100,6 +110,11 @@ class GUIAgent:
         self.before_step: list[StepHook] = []
         self._t0 = time.time()
         self._answer = ""
+        # 秘密清洗器与日志共用（日志落盘、评测结果行、RunResult 都经过它）
+        self.scrubber = logger.scrubber if logger is not None else Scrubber()
+        self.scrubber.extend(str(v) for v in (cfg.secrets or {}).values())
+        self._sg_baseline: Optional[Observation] = None
+        self._task_baseline: Optional[Observation] = None
         if self.budget.max_calls is None:
             self.budget.max_calls = cfg.max_budget_calls
         if self.budget.max_tokens is None:
@@ -144,28 +159,69 @@ class GUIAgent:
                 a.x, a.y = g.x, g.y
         return a, "direct" if a.is_pointer else "-"
 
+    def _scrub(self, text):
+        return self.scrubber.scrub(text) if isinstance(text, str) else text
+
+    def _view(self, a: Action, obs: Optional[Observation]) -> tuple[dict, str]:
+        """安全摘要（dict 给日志，str 给记忆 / 提示词）；脱敏只由输入目标决定。"""
+        d = safe_view(a, obs, self.guard.focus(obs)[1])
+        d = self.scrubber.scrub_obj(d)
+        short = dict(d)
+        short.pop("reason", None)
+        import json as _json
+        return d, _json.dumps(short, ensure_ascii=False)
+
+    def _actor_task(self, task: str) -> str:
+        if not self.cfg.secrets:
+            return task
+        names = ", ".join(sorted(self.cfg.secrets))
+        return (f"{task}\n(Secrets you may type without knowing them: write <secret>NAME</secret> in a type action; "
+                f"available names: {names})")
+
     # ------------------------------------------------------------------ 统一执行出口（安全闸门）
     def _execute_gated(self, a: Action, obs: Optional[Observation], origin: str = "actor") -> ExecResult:
-        """所有真正发往环境的动作都从这里走：先过安全闸门，拒绝即返回 blocked_by_safety（终止性，不重试）。"""
+        """所有真正发往环境的动作都从这里走：先过安全闸门，拒绝即返回 blocked_by_safety（终止性，不重试）。
+
+        v0.3.1：敏感输入的原文登记到 Scrubber；秘密占位符只在这里、紧挨着 env.execute 才替换成原文。
+        """
+        state = self.guard.focus(obs)[1]
+        if a.type == "type" and a.text and is_sensitive_type(a, obs, state) and not SECRET_RE.search(a.text):
+            self.scrubber.add(a.text)
+        view, _ = self._view(a, obs)
         approved, why = self.guard.gate(a, obs)
+        why = self._scrub(why)
         if (why or not approved) and self.log:
-            self.log.step(kind="safety", step=self.step_no, origin=origin, action=_redact(a, obs),
+            self.log.step(kind="safety", step=self.step_no, origin=origin, action=view,
                           reason=why, approved=approved)
         if not approved:
             t = time.time()
             return ExecResult(False, f"blocked_by_safety: {why}", t, t)
-        res = self.env.execute(a)
+        exec_a = a
+        if a.type == "type" and a.text and self.cfg.secrets and SECRET_RE.search(a.text):
+            exec_a = replace(a, text=resolve_secrets(a.text, self.cfg.secrets))
+        res = self.env.execute(exec_a)
+        res.error, res.output = self._scrub(res.error), self._scrub(res.output)   # 执行层报错可能回显输入
         if not res.ok and "blocked_by_safety" in (res.error or ""):
             self.guard.remember_denial(a, obs, res.error)      # 环境层（例如 Web 白名单）拦截也是终止性的
         return res
+
+    def _settled_for_check(self, baseline: Optional[Observation] = None) -> tuple[Observation, bool]:
+        """收尾核验用的观察：未稳定或仍有忙碌指示时再等待复查（最多 busy_rechecks 次）。返回 (观察, 是否已稳定)。"""
+        obs, stable = self._settle()
+        for _ in range(max(0, self.cfg.busy_rechecks)):
+            if stable and not self.verifier.busy(obs, baseline):
+                break
+            obs, stable = self._settle()
+        return obs, stable
 
     def _run_recovery_actions(self, actions: list[Action], obs: Observation, origin: str) -> list[str]:
         """执行恢复动作（每个都过安全闸门）；返回被拦下的动作说明。被拦后不再继续执行后续恢复动作。"""
         blocked = []
         for ra in actions:
+            shown = self._view(ra, obs)[1]
             r = self._execute_gated(ra, obs, origin)
             if not r.ok and "blocked_by_safety" in r.error:
-                blocked.append(f"{ra.short()} ({r.error})")
+                blocked.append(f"{shown} ({r.error})")
                 break
         if actions:
             self._settle()
@@ -189,6 +245,7 @@ class GUIAgent:
     def _run(self, task: str) -> RunResult:
         self._replans = 0
         obs = self.env.observe()
+        self._task_baseline = obs
         subgoals = self.planner.plan(task, obs)
         if self.log:
             self.log.meta(task_text=task, platform=self.cfg.platform, task_window=self.cfg.task_window,
@@ -214,7 +271,8 @@ class GUIAgent:
                 self._replans += 1
                 obs = self.env.observe()
                 self.mem.invalidate_after(sg.id)
-                rest = self.planner.replan(task, obs, sg, notes, self.mem.milestones_text(), sg.id, self.mem.notes_text())
+                rest = self.planner.replan(task, obs, sg, self._scrub(notes), self.mem.milestones_text(), sg.id,
+                                           self._scrub(self.mem.notes_text()))
                 subgoals = subgoals[:idx] + rest
                 if self.log:
                     self.log.step(kind="replan", failed=sg, notes=notes, subgoals=rest)
@@ -222,7 +280,10 @@ class GUIAgent:
             # 任务收尾核验：只看当前屏幕；聚合整个任务 + 全部子目标；明确 SUCCESS 才算完成
             if not self.cfg.final_check:
                 return self._finish("done", True, self._replans, "final check disabled")
-            final = self.verifier.check_final(self._settle()[0], task, subgoals, self.cfg.final_l2)
+            fobs, fstable = self._settled_for_check(self._task_baseline)
+            final = self.verifier.check_final(fobs, task, subgoals, self.cfg.final_l2, stable=fstable,
+                                              baseline=self._task_baseline)
+            final.evidence = self._scrub(final.evidence)
             if self.log:
                 self.log.step(kind="final_check", verdict=final.verdict, evidence=final.evidence, level=final.level,
                               signals=final.signals)
@@ -238,8 +299,9 @@ class GUIAgent:
             self._replans += 1
             obs = self.env.observe()
             failed = Subgoal(0, f"final check of the whole task: {task}", "all task requirements hold on screen")
-            rest = self.planner.replan(task, obs, failed, note, self.mem.milestones_text(),
-                                       max((sg.id for sg in subgoals), default=0) + 1, self.mem.notes_text())
+            rest = self.planner.replan(task, obs, failed, self._scrub(note), self.mem.milestones_text(),
+                                       max((sg.id for sg in subgoals), default=0) + 1,
+                                       self._scrub(self.mem.notes_text()))
             idx = len(subgoals)
             subgoals = subgoals + rest
             if self.log:
@@ -249,6 +311,8 @@ class GUIAgent:
     def _run_subgoal(self, task: str, sg: Subgoal, total: int) -> tuple[str, str]:
         feedback, last_failure = "", None
         zoom_around = None
+        self._sg_baseline = None
+        actor_task = self._actor_task(task)
         for _ in range(self.cfg.max_steps_per_subgoal):
             lim = self._limit()
             if lim:
@@ -257,13 +321,16 @@ class GUIAgent:
             for hook in self.before_step:
                 hook(self.step_no, self)
             before = self.env.observe()
+            if self._sg_baseline is None:
+                self._sg_baseline = before          # 子目标开始时的界面：旧证据基线
             if self._precheck_focus(sg, before):
                 feedback = "The task window had lost focus; it was restored before acting."
                 continue
             try:
-                action, thought = self.actor.next_action(task, sg, total, before, self.mem.history_text(sg.id),
-                                                         self.mem.milestones_text(), feedback,
-                                                         notes=self.mem.notes_text())
+                action, thought = self.actor.next_action(actor_task, sg, total, before,
+                                                         self.mem.history_text(sg.id),
+                                                         self.mem.milestones_text(), self._scrub(feedback),
+                                                         notes=self._scrub(self.mem.notes_text()))
                 if not isinstance(action, Action):
                     raise ActionParseError("not_object", f"actor returned {type(action).__name__}, not an Action")
                 action.validate()
@@ -297,8 +364,8 @@ class GUIAgent:
                     self.log.step(kind="ask_user", step=self.step_no, question=action.text, answer=ans)
                 feedback = (f"The user answered: {ans}" if ans else
                             "The user is not available. Proceed with your best judgment, or fail if impossible.")
-                self.mem.add_step(StepRecord(self.step_no, sg.id, action.short(), "success" if ans else "uncertain",
-                                             f"answer={ans!r}"))
+                self.mem.add_step(StepRecord(self.step_no, sg.id, self._view(action, before)[1],
+                                             "success" if ans else "uncertain", f"answer={ans!r}"))
                 continue
 
             # ---- 定位
@@ -306,18 +373,21 @@ class GUIAgent:
             zoom_around = None
             if src == "grounding_failed":
                 feedback = f"Could not locate {action.target!r} on screen; describe it differently, use element_id, or another path."
-                self.mem.add_step(StepRecord(self.step_no, sg.id, action.short(), "grounding_failed", ""))
+                self.mem.add_step(StepRecord(self.step_no, sg.id, self._view(action, before)[1], "grounding_failed", ""))
                 continue
 
             # ---- 安全闸门 + 执行（统一出口）
+            view_d, view_s = self._view(action, before)      # 在闸门之前算（闸门会更新焦点状态）
             res = self._execute_gated(action, before, "actor")
             if not res.ok and res.error.startswith("blocked_by_safety") and "off-allowlist" not in res.error:
                 after, stable = before, True
             else:
                 after, stable = self._settle()
             check = self.verifier.check_step(before, after, action, res, stable, expected=sg.expected,
-                                             task_window=self.cfg.task_window, expect_text=sg.expect_text or None)
-            rec = StepRecord(self.step_no, sg.id, action.short(), check.verdict.value, check.evidence)
+                                             task_window=self.cfg.task_window, expect_text=sg.expect_text or None,
+                                             action_desc=view_s)
+            check.evidence = self._scrub(check.evidence)
+            rec = StepRecord(self.step_no, sg.id, view_s, check.verdict.value, check.evidence)
 
             if check.verdict == Verdict.SUCCESS:
                 feedback, last_failure = "", None
@@ -332,7 +402,7 @@ class GUIAgent:
                     zoom_around = action.point
                 if plan.strategy in {Strategy.REPLAN, Strategy.GIVE_UP} and self.recovery.exhausted:
                     self.mem.add_step(rec)
-                    self._log_step(rec, before, after, action, src, check, thought)
+                    self._log_step(rec, before, after, view_d, src, check, thought)
                     return "fail", f"{check.verdict.value}: {check.evidence}"
                 feedback = f"Last action => {check.verdict.value}: {check.evidence}. Recovery: {plan.note}."
                 if "blocked_by_safety" in (check.signals or {}).get("exec_error", ""):
@@ -343,6 +413,7 @@ class GUIAgent:
                         and not self.budget.exhausted():
                     note = self.reflector.reflect(task, sg.goal, self.mem.history_text(sg.id) + "\n" + rec.action,
                                                   f"{check.verdict.value}: {check.evidence}")
+                    note = self._scrub(note)
                     if note:
                         self.mem.add_note(note)
                         feedback += f" Reflection: {note}"
@@ -350,7 +421,7 @@ class GUIAgent:
                             self.log.step(kind="reflection", step=self.step_no, note=note)
 
             self.mem.add_step(rec)
-            self._log_step(rec, before, after, action, src, check, thought)
+            self._log_step(rec, before, after, view_d, src, check, thought)
         return "fail", "sub-goal step limit"
 
     def _precheck_focus(self, sg: Subgoal, before: Observation) -> bool:
@@ -370,21 +441,22 @@ class GUIAgent:
         rec = StepRecord(self.step_no, sg.id, "(pre-action focus check)", check.verdict.value, check.evidence,
                          plan.strategy.value)
         self.mem.add_step(rec)
-        self._log_step(rec, before, after, Action("wait"), "-", check, "pre-action state check")
+        self._log_step(rec, before, after, Action("wait").to_dict(), "-", check, "pre-action state check")
         return bool(plan.actions) or plan.strategy != Strategy.REFOCUS
 
     def _confirm_goal(self, sg: Subgoal) -> tuple[bool, str]:
         if not self.cfg.verify_goals:
             return True, "not verified"
-        obs, _ = self._settle()
-        c: Check = self.verifier.check_goal(obs, sg.goal, sg.evidence or sg.expected, sg.expect_text or None)
-        return c.verdict == Verdict.SUCCESS, f"[{c.level}] {c.evidence}"
+        obs, stable = self._settled_for_check(self._sg_baseline)
+        c: Check = self.verifier.check_goal(obs, sg.goal, sg.evidence or sg.expected, sg.expect_text or None,
+                                            stable=stable, baseline=self._sg_baseline)
+        return c.verdict == Verdict.SUCCESS, self._scrub(f"[{c.level}] {c.evidence}")
 
-    def _log_step(self, rec: StepRecord, before, after, action, src, check: Check, thought: str) -> None:
+    def _log_step(self, rec: StepRecord, before, after, action_view: dict, src, check: Check, thought: str) -> None:
         if not self.log:
             return
-        self.log.step(kind="step", step=rec.step, subgoal=rec.subgoal_id, thought=thought,
-                      action=_redact(action, before), grounding=src, verdict=check.verdict, level=check.level,
+        self.log.step(kind="step", step=rec.step, subgoal=rec.subgoal_id, thought=self._scrub(thought),
+                      action=action_view, grounding=src, verdict=check.verdict, level=check.level,
                       evidence=check.evidence, signals=check.signals, recovery=rec.recovery,
                       window=after.active_window, url=after.url,
                       before=self.log.shot(rec.step, "before", before.screenshot),
@@ -395,17 +467,13 @@ class GUIAgent:
         assert status in TERMINAL_STATUSES, status
         claimed = claimed and status == "done"          # 只有 done 才算“宣称完成”
         r = RunResult(status, claimed, self.step_no, replans, list(self.recovery.history), self.budget,
-                      time.time() - self._t0, msg, self._answer, list(self.guard.log), self.policy.to_dict())
+                      time.time() - self._t0, self._scrub(msg), self._scrub(self._answer),
+                      self.scrubber.scrub_obj(list(self.guard.log)), self.policy.to_dict())
         if self.log:
             self.log.meta(result=r)
         return r
 
 
 def _redact(a: Action, obs: Optional[Observation]) -> dict:
-    """日志里不写入往密码框输入的明文。"""
-    d = a.to_dict()
-    if a.type == "type" and obs is not None:
-        f = next((e for e in obs.elements if e.focused), None)
-        if f is not None and getattr(f, "is_password", False):
-            d["text"] = "***"
-    return d
+    """兼容 v0.3 的旧接口：等价于 gua.sensitive.safe_view（脱敏由输入目标决定）。"""
+    return safe_view(a, obs)

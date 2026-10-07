@@ -16,6 +16,14 @@ v0.3：
 - 是否允许 L2、L1 是否用无障碍证据、提示词里能否放可见文本，统一由 CapabilityPolicy 决定（审查条目 6）。
 - 新增 check_final：任务收尾核验 = 重新规则核验每个子目标的 expect_text + （需要时）整任务聚合 L2；
   只有明确的 success 才算成功，uncertain / 无法解析一律不是成功（审查条目 2）。
+
+v0.3.1（第二轮审查条目 3 / 7）：
+- L2 请求里的动作描述由调用方传入安全摘要（action_desc），不再直接用 action.short()（密码不进模型请求）。
+- check_goal / check_final 接收 stable 与 baseline：屏幕未稳定或仍有忙碌指示（progressbar / aria-busy /
+  Loading…）→ UNCERTAIN（从不 success）；期望文本在基线（子目标 / 任务开始时）就已可见、且之后屏幕没有变化
+  → 视为旧证据，不能单凭它判定成功（交给 L2，L2 不可用则 UNCERTAIN）。
+- 步骤级规则：期望文本在动作前就已存在时，不再据此判定该步 success。
+- 忙碌判定：progressbar 的 aria-valuenow == aria-valuemax（静态的满进度条）不算忙碌。
 """
 from __future__ import annotations
 
@@ -25,6 +33,7 @@ from enum import Enum
 from typing import Optional
 
 from ..actions import Action
+from ..env.a11y import PROGRESS_ROLES
 from ..env.base import ExecResult, Observation
 from ..parsing import extract_json
 from ..policy import CapabilityPolicy
@@ -111,6 +120,44 @@ class Verifier:
     def _screen_text(self, obs: Observation) -> str:
         return obs.all_text()[:1500] if self.a11y_prompt else "(not provided: vision only)"
 
+    def busy(self, obs: Observation, baseline: Optional[Observation] = None) -> str:
+        """忙碌指示（只在允许使用无障碍 / 文本规则时判断；纯视觉消融下返回空串）。
+
+        元素信号（progressbar 未满 / aria-busy）按绝对值判断；文字信号（Loading… 等）噪声大（例如页面说明文字
+        “Loading takes a few seconds”），给了 baseline 时只看是否比基线多出来。
+        """
+        if not self.use_a11y:
+            return ""
+        el = next((e for e in obs.elements if _busy_el(e)), None)
+        if el is not None:
+            return el.name or el.native_role
+        hits = BUSY_RE.findall(obs.text or "")
+        if not hits:
+            return ""
+        if baseline is not None and len(hits) <= len(BUSY_RE.findall(baseline.text or "")):
+            return ""
+        return hits[0]
+
+    def changed(self, a: Observation, b: Observation) -> bool:
+        """两次观察之间界面是否有变化（可见文本 / 无障碍文本不同，或像素差超过全局阈值）。"""
+        if (a.all_text() if self.use_a11y else "") != (b.all_text() if self.use_a11y else ""):
+            return True
+        try:
+            return frame_diff(a.screenshot, b.screenshot) > self.global_thresh
+        except Exception:  # noqa: BLE001  — 尺寸不同等：当作有变化
+            return True
+
+    def _not_settled(self, obs: Observation, stable: bool, level: str,
+                     baseline: Optional[Observation] = None) -> Optional[Check]:
+        if not stable:
+            return Check(Verdict.UNCERTAIN, "screen still changing at verification time; not judged complete",
+                         level, {"stable": False})
+        b = self.busy(obs, baseline)
+        if b:
+            return Check(Verdict.UNCERTAIN, f"busy indicator still visible ({b!r}); not judged complete", level,
+                         {"busy": b})
+        return None
+
     # ---------------------------------------------------------------- L0 + L1
     def rule_check(self, before: Observation, after: Observation, action: Action, exec_res: ExecResult,
                    stable: bool, task_window: str = "", expect_text: Optional[str] = None) -> Check:
@@ -164,9 +211,11 @@ class Verifier:
         # 5) 无障碍树正面证据
         if self.use_a11y:
             if expect_text and expect_text.lower() in after.all_text().lower():
-                return Check(Verdict.SUCCESS, f"accessibility tree shows {expect_text!r}", "L1", sig)
+                if expect_text.lower() not in before.all_text().lower():
+                    return Check(Verdict.SUCCESS, f"accessibility tree shows {expect_text!r}", "L1", sig)
+                sig["stale_expect_text"] = True      # 动作前就有：不能作为这一步的成功证据
             if action.type == "type" and action.text:
-                hit = [e for e in after.elements if e.role in {"textbox", "combobox"}
+                hit = [e for e in after.elements if e.role in {"textbox", "combobox"} and not e.is_password
                        and action.text in (e.value or "")]
                 if hit:
                     return Check(Verdict.SUCCESS, f"field {hit[0].name!r} now contains the typed text", "L1", sig)
@@ -192,7 +241,8 @@ class Verifier:
         return Check(Verdict.UNCERTAIN, "screen changed; effect not confirmed by rules", "L1", sig)
 
     # ---------------------------------------------------------------- L2
-    def model_check(self, before: Observation, after: Observation, action: Action, expected: str) -> Check:
+    def model_check(self, before: Observation, after: Observation, action: Action, expected: str,
+                    action_desc: Optional[str] = None) -> Check:
         if self.llm is None:
             return Check(Verdict.UNCERTAIN, "no verifier model", "L2")
         if not self.llm_step:
@@ -200,42 +250,56 @@ class Verifier:
         mark = action.point
         img = side_by_side(before.screenshot, after.screenshot, mark)
         out = self.llm.chat(STEP_SYSTEM.format(platform=self.platform), STEP_PROMPT.format(
-            action=action.short(), expected=expected or "(not specified)",
+            action=action_desc if action_desc is not None else action.safe_short(before),
+            expected=expected or "(not specified)",
             win_before=before.active_window, win_after=after.active_window), [img])
         return _parse_check(out)
 
     def check_step(self, before: Observation, after: Observation, action: Action, exec_res: ExecResult,
-                   stable: bool, expected: str, task_window: str = "", expect_text: Optional[str] = None) -> Check:
+                   stable: bool, expected: str, task_window: str = "", expect_text: Optional[str] = None,
+                   action_desc: Optional[str] = None) -> Check:
         if self.trigger == "none":
             return Check(Verdict.SUCCESS if exec_res.ok else Verdict.FAILED,
                          "verification disabled" if exec_res.ok else exec_res.error, "off",
                          {"exec_error": exec_res.error} if not exec_res.ok else {})
         rc = self.rule_check(before, after, action, exec_res, stable, task_window, expect_text)
         if self.trigger == "every_step" and rc.level != "L0" and self.llm_step and self.llm is not None:
-            mc = self.model_check(before, after, action, expected)
+            mc = self.model_check(before, after, action, expected, action_desc)
             mc.signals = rc.signals
             return mc
         # on_event：规则能定论的直接返回；只有 UNCERTAIN 才花一次模型调用
         if rc.verdict == Verdict.UNCERTAIN:
-            mc = self.model_check(before, after, action, expected)
+            mc = self.model_check(before, after, action, expected, action_desc)
             mc.signals = rc.signals
             return mc
         return rc
 
-    def check_goal(self, obs: Observation, goal: str, evidence: str, expect_text: Optional[str] = None) -> Check:
+    def check_goal(self, obs: Observation, goal: str, evidence: str, expect_text: Optional[str] = None,
+                   stable: bool = True, baseline: Optional[Observation] = None) -> Check:
         """子目标/任务收尾核验：只看“现在”的屏幕，防止用旧证据宣告完成（任务状态失配）。
 
         先走 L1：若子目标给了 expect_text，且当前无障碍树/可见文本里出现 → 直接成功（零模型调用）。
+        v0.3.1：未稳定 / 忙碌 → UNCERTAIN；expect_text 在 baseline 里就有且屏幕没变 → 旧证据，不能单独定论。
         """
         if self.trigger == "none":
             return Check(Verdict.SUCCESS, "goal verification disabled", "off")
+        ns = self._not_settled(obs, stable, "goal-L1", baseline)
+        if ns:
+            return ns
+        stale = ""
         if expect_text and self.use_a11y:
-            if expect_text.lower() in obs.all_text().lower():
-                return Check(Verdict.SUCCESS, f"current screen shows {expect_text!r}", "goal-L1")
-            if self.llm is None or not self.llm_goal:
+            low = expect_text.lower()
+            if low in obs.all_text().lower():
+                if baseline is not None and low in baseline.all_text().lower() and not self.changed(baseline, obs):
+                    stale = (f"{expect_text!r} was already visible before this sub-goal started and the screen has "
+                             f"not changed since (stale evidence)")
+                else:
+                    return Check(Verdict.SUCCESS, f"current screen shows {expect_text!r}", "goal-L1")
+            elif self.llm is None or not self.llm_goal:
                 return Check(Verdict.FAILED, f"{expect_text!r} not found on current screen", "goal-L1")
         if self.llm is None or not self.llm_goal:
-            return Check(Verdict.UNCERTAIN, "no rule evidence and L2 unavailable/disabled", "goal-L1")
+            return Check(Verdict.UNCERTAIN, stale or "no rule evidence and L2 unavailable/disabled", "goal-L1",
+                         {"stale_evidence": True} if stale else {})
         out = self.llm.chat(STEP_SYSTEM.format(platform=self.platform),
                             GOAL_PROMPT.format(goal=goal, evidence=evidence or goal, text=self._screen_text(obs)),
                             [obs.screenshot])
@@ -243,7 +307,8 @@ class Verifier:
         c.level = "goal-L2"
         return c
 
-    def check_final(self, obs: Observation, task: str, subgoals: list, final_l2: str = "when_needed") -> Check:
+    def check_final(self, obs: Observation, task: str, subgoals: list, final_l2: str = "when_needed",
+                    stable: bool = True, baseline: Optional[Observation] = None) -> Check:
         """任务收尾核验（只看当前屏幕）。
 
         1) 规则：每个带 expect_text 且 persistent 的子目标，其文字现在必须仍在屏幕/无障碍树中（零模型调用）；
@@ -253,18 +318,25 @@ class Verifier:
         """
         if self.trigger == "none":
             return Check(Verdict.SUCCESS, "goal verification disabled", "off")
+        ns = self._not_settled(obs, stable, "final-L1", baseline)
+        if ns:
+            return ns
         text = obs.all_text().lower()
         checkable = [sg for sg in subgoals if getattr(sg, "expect_text", "") and getattr(sg, "persistent", True)]
+        proven = list(checkable)
         if self.use_a11y:
             gone = [sg for sg in checkable if sg.expect_text.lower() not in text]
             if gone:
                 desc = "; ".join(f"sub-goal {sg.id} ({sg.goal!r}) expected {sg.expect_text!r}" for sg in gone)
                 return Check(Verdict.FAILED, f"no longer true on the current screen: {desc}", "final-L1",
                              {"failed_subgoals": [sg.id for sg in gone]})
-            if subgoals and len(checkable) == len(subgoals) and final_l2 != "always":
+            if baseline is not None and not self.changed(baseline, obs):     # 旧证据：任务开始时就在、屏幕也没变
+                btxt = baseline.all_text().lower()
+                proven = [sg for sg in checkable if sg.expect_text.lower() not in btxt]
+            if subgoals and len(proven) == len(subgoals) and final_l2 != "always":
                 return Check(Verdict.SUCCESS, f"all {len(subgoals)} sub-goal expectations visible now", "final-L1")
         if self.llm is None or not self.llm_goal:
-            missing = [sg.id for sg in subgoals if sg not in checkable] if self.use_a11y else [sg.id for sg in subgoals]
+            missing = [sg.id for sg in subgoals if sg not in proven] if self.use_a11y else [sg.id for sg in subgoals]
             return Check(Verdict.UNCERTAIN, f"sub-goals {missing} have no rule evidence and L2 is unavailable/disabled",
                          "final-L1")
         lines = []
@@ -287,20 +359,29 @@ class Verifier:
         return c
 
 
+def _busy_el(e) -> bool:
+    if e.attrs.get("aria-busy") == "true":
+        return True
+    if e.native_role not in PROGRESS_ROLES and not e.native_role.endswith(".ProgressBar"):
+        return False
+    try:        # 静态的满进度条（例如存储空间 100%）不算忙碌
+        now, mx = float(e.attrs.get("aria-valuenow")), float(e.attrs.get("aria-valuemax", 100))
+        return now < mx
+    except (TypeError, ValueError):
+        return True     # 不定进度 / 没有数值：按忙碌处理
+
+
 def is_busy(obs: Observation) -> str:
     """返回忙碌指示文本（空串表示不忙）。"""
     for e in obs.elements:
-        if e.native_role in {"progressbar", "ProgressBar", "AXProgressIndicator", "AXBusyIndicator"} or \
-                e.attrs.get("aria-busy") == "true":
+        if _busy_el(e):
             return e.name or e.native_role
     m = BUSY_RE.search(obs.text or "")
     return m.group(0) if m else ""
 
 
 def busy_count(obs: Observation) -> int:
-    n = sum(1 for e in obs.elements if e.native_role in {"progressbar", "ProgressBar", "AXProgressIndicator",
-                                                          "AXBusyIndicator"} or e.attrs.get("aria-busy") == "true")
-    return n + len(BUSY_RE.findall(obs.text or ""))
+    return sum(1 for e in obs.elements if _busy_el(e)) + len(BUSY_RE.findall(obs.text or ""))
 
 
 _GOAL_VERDICTS = {Verdict.SUCCESS, Verdict.FAILED, Verdict.UNCERTAIN}

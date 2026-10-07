@@ -98,3 +98,5 @@ Planner ──subgoals(expected, evidence, expect_text)──▶ 每个子目标
 - Android 非 ASCII 输入需要 ADBKeyboard；Linux 仅支持 X11；macOS 需要“辅助功能 + 屏幕录制”权限
 - 未实现：MCP 工具通道、代码动作、推测式多动作、OmniParser 视觉检测（见 research.md 第 4 节）
 - 视觉验证器本身需要单独标注和评测（Microsoft 关于 CUA verifier 的研究提醒）
+- v0.3.1：敏感输入的脱敏 / 确认只依据“输入目标”（gua/sensitive.py）；桌面与 Android 的焦点只来自无障碍树，没有 Web 那样的独立焦点探测；
+  Scrubber 只能清洗已知秘密，推荐用 `AgentConfig.secrets` 占位符让模型看不到原文（详见 README“已知限制”与 docs/review-fixes.md 第二轮）

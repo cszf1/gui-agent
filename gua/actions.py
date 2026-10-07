@@ -126,6 +126,8 @@ class Action:
     reason: str = ""                    # 模型给出的理由（日志用）
     # 模型坐标 → 截图像素的变换链（来自实际发送的图像尺寸，见 coords.ImageTransform）；不序列化
     transform: Optional[Any] = field(default=None, repr=False, compare=False)
+    # Executor-issued snapshot binding. Never accepted from model JSON or serialized.
+    binding: Optional[dict] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.type, str) or self.type not in ACTION_TYPES:
@@ -226,7 +228,7 @@ class Action:
 
     def to_dict(self) -> dict[str, Any]:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__
-             if k not in {"coord_space", "transform"} and getattr(self, k) not in (None, [], "", 0, 0.0, False)}
+             if k not in {"coord_space", "transform", "binding"} and getattr(self, k) not in (None, [], "", 0, 0.0, False)}
         d = json.loads(json.dumps(d, default=str))
         if self.coord_space != "pixel":
             d["coord_space"] = self.coord_space

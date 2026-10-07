@@ -112,7 +112,11 @@ class ScriptedPolicy:
                 e = find(els, st[kind], st.get("role"))
                 return {"type": kind, "element_id": e["id"]} if e else {"type": kind, "target": st[kind]}
         if "type" in st:
-            return {"type": "type", "text": st["type"], "clear": st.get("clear", False), "submit": st.get("submit", False)}
+            action = {"type": "type", "text": st["type"], "clear": st.get("clear", False), "submit": st.get("submit", False)}
+            if st.get("target"):
+                element = find(els, st["target"], "textbox")
+                action.update({"element_id": element["id"]} if element else {"target": st["target"]})
+            return action
         if "hotkey" in st:
             return {"type": "hotkey", "keys": st["hotkey"]}
         if "scroll" in st:

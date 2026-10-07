@@ -1,0 +1,344 @@
+{
+  "date": "2026-10-07T17:49:33.821356+00:00",
+  "baseline_checkout": "/workspace/scratch/gui-agent-execution-baseline",
+  "scope": "Local Chromium execution; fixed scripted decisions; no real model calls or Windows desktop",
+  "repeat": 5,
+  "summary": {
+    "legacy": {
+      "median_seconds": 14.6539,
+      "median_calls": 12,
+      "median_observations": 52,
+      "passed": 5,
+      "false_done": 0,
+      "drift_correct": 0,
+      "drift_wrong": 5
+    },
+    "current": {
+      "median_seconds": 5.5759,
+      "median_calls": 8,
+      "median_observations": 36,
+      "passed": 5,
+      "false_done": 0,
+      "drift_correct": 5,
+      "drift_wrong": 0
+    }
+  },
+  "samples": {
+    "legacy": [
+      {
+        "seconds": 12.2252,
+        "steps": 9,
+        "calls": 12,
+        "observations": 52,
+        "passed": true,
+        "false_done": false,
+        "performance": {}
+      },
+      {
+        "seconds": 13.2902,
+        "steps": 9,
+        "calls": 12,
+        "observations": 52,
+        "passed": true,
+        "false_done": false,
+        "performance": {}
+      },
+      {
+        "seconds": 15.7858,
+        "steps": 9,
+        "calls": 12,
+        "observations": 52,
+        "passed": true,
+        "false_done": false,
+        "performance": {}
+      },
+      {
+        "seconds": 14.6784,
+        "steps": 9,
+        "calls": 12,
+        "observations": 52,
+        "passed": true,
+        "false_done": false,
+        "performance": {}
+      },
+      {
+        "seconds": 14.6539,
+        "steps": 9,
+        "calls": 12,
+        "observations": 52,
+        "passed": true,
+        "false_done": false,
+        "performance": {}
+      }
+    ],
+    "current": [
+      {
+        "seconds": 4.45,
+        "steps": 7,
+        "calls": 8,
+        "observations": 36,
+        "passed": true,
+        "false_done": false,
+        "performance": {
+          "phases": {
+            "observe": {
+              "seconds": 0.7568,
+              "count": 12
+            },
+            "plan": {
+              "seconds": 0.0001,
+              "count": 1
+            },
+            "decide": {
+              "seconds": 0.0019,
+              "count": 7
+            },
+            "ground": {
+              "seconds": 0.0001,
+              "count": 5
+            },
+            "execute": {
+              "seconds": 0.78,
+              "count": 7
+            },
+            "settle": {
+              "seconds": 2.8051,
+              "count": 8
+            },
+            "verify": {
+              "seconds": 0.0767,
+              "count": 8
+            }
+          },
+          "execution_routes": {
+            "browser_element": 5,
+            "browser_type": 2
+          }
+        }
+      },
+      {
+        "seconds": 4.5006,
+        "steps": 7,
+        "calls": 8,
+        "observations": 36,
+        "passed": true,
+        "false_done": false,
+        "performance": {
+          "phases": {
+            "observe": {
+              "seconds": 0.7476,
+              "count": 12
+            },
+            "plan": {
+              "seconds": 0.0008,
+              "count": 1
+            },
+            "decide": {
+              "seconds": 0.0017,
+              "count": 7
+            },
+            "ground": {
+              "seconds": 0.0001,
+              "count": 5
+            },
+            "execute": {
+              "seconds": 0.7569,
+              "count": 7
+            },
+            "settle": {
+              "seconds": 2.8962,
+              "count": 8
+            },
+            "verify": {
+              "seconds": 0.0695,
+              "count": 8
+            }
+          },
+          "execution_routes": {
+            "browser_element": 5,
+            "browser_type": 2
+          }
+        }
+      },
+      {
+        "seconds": 5.6898,
+        "steps": 7,
+        "calls": 8,
+        "observations": 36,
+        "passed": true,
+        "false_done": false,
+        "performance": {
+          "phases": {
+            "observe": {
+              "seconds": 1.2301,
+              "count": 12
+            },
+            "plan": {
+              "seconds": 0.0001,
+              "count": 1
+            },
+            "decide": {
+              "seconds": 0.0019,
+              "count": 7
+            },
+            "ground": {
+              "seconds": 0.0001,
+              "count": 5
+            },
+            "execute": {
+              "seconds": 0.9299,
+              "count": 7
+            },
+            "settle": {
+              "seconds": 3.3851,
+              "count": 8
+            },
+            "verify": {
+              "seconds": 0.0989,
+              "count": 8
+            }
+          },
+          "execution_routes": {
+            "browser_element": 5,
+            "browser_type": 2
+          }
+        }
+      },
+      {
+        "seconds": 5.5759,
+        "steps": 7,
+        "calls": 8,
+        "observations": 36,
+        "passed": true,
+        "false_done": false,
+        "performance": {
+          "phases": {
+            "observe": {
+              "seconds": 1.1245,
+              "count": 12
+            },
+            "plan": {
+              "seconds": 0.0001,
+              "count": 1
+            },
+            "decide": {
+              "seconds": 0.0039,
+              "count": 7
+            },
+            "ground": {
+              "seconds": 0.0001,
+              "count": 5
+            },
+            "execute": {
+              "seconds": 0.9995,
+              "count": 7
+            },
+            "settle": {
+              "seconds": 3.307,
+              "count": 8
+            },
+            "verify": {
+              "seconds": 0.1016,
+              "count": 8
+            }
+          },
+          "execution_routes": {
+            "browser_element": 5,
+            "browser_type": 2
+          }
+        }
+      },
+      {
+        "seconds": 6.7347,
+        "steps": 7,
+        "calls": 8,
+        "observations": 36,
+        "passed": true,
+        "false_done": false,
+        "performance": {
+          "phases": {
+            "observe": {
+              "seconds": 1.7791,
+              "count": 12
+            },
+            "plan": {
+              "seconds": 0.0001,
+              "count": 1
+            },
+            "decide": {
+              "seconds": 0.0022,
+              "count": 7
+            },
+            "ground": {
+              "seconds": 0.0001,
+              "count": 5
+            },
+            "execute": {
+              "seconds": 1.2151,
+              "count": 7
+            },
+            "settle": {
+              "seconds": 3.5784,
+              "count": 8
+            },
+            "verify": {
+              "seconds": 0.1198,
+              "count": 8
+            }
+          },
+          "execution_routes": {
+            "browser_element": 5,
+            "browser_type": 2
+          }
+        }
+      }
+    ]
+  },
+  "layout_drift": {
+    "legacy": [
+      {
+        "correct": false,
+        "wrong": true
+      },
+      {
+        "correct": false,
+        "wrong": true
+      },
+      {
+        "correct": false,
+        "wrong": true
+      },
+      {
+        "correct": false,
+        "wrong": true
+      },
+      {
+        "correct": false,
+        "wrong": true
+      }
+    ],
+    "current": [
+      {
+        "correct": true,
+        "wrong": false
+      },
+      {
+        "correct": true,
+        "wrong": false
+      },
+      {
+        "correct": true,
+        "wrong": false
+      },
+      {
+        "correct": true,
+        "wrong": false
+      },
+      {
+        "correct": true,
+        "wrong": false
+      }
+    ]
+  },
+  "speedup": 2.628
+}

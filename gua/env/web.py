@@ -41,6 +41,8 @@ import html
 import io
 import re
 import time
+import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse
@@ -52,6 +54,7 @@ from ..keys import canonical_key
 from ..urlpolicy import UrlRejected, domain_allowed, normalize
 from .a11y import finalize, web_raws
 from .base import Env, ExecResult, Observation
+from .web_state import STABILITY_JS
 
 # 每次 type 复查焦点之间最多发送的字符数（输入事件可能中途移焦，不能整串无检查地交给全局 keyboard）
 _TYPE_CHUNK = 1
@@ -133,6 +136,10 @@ _JS_HELPERS = r"""
     return id;
   };
   const domId = (el, fid) => String(fid) + '-' + String(domIdOf(el));
+  const documentId = () => {
+    if (!window.__guaDocumentId) window.__guaDocumentId = String(performance.timeOrigin) + '-' + String(Math.random());
+    return window.__guaDocumentId;
+  };
   const submitId = (el, fid) => { const b = submitElOf(el); return b ? domId(b, fid) : ''; };
   // 只有能证明"键盘输入确实落到这个原生控件"的元素才算已知焦点；div / 自定义节点可能挂 closed shadow root，
   // 无法证明输入目标 → 一律不报告为已知（见 FOCUS_JS / FOCUS_HANDLE_JS）。
@@ -153,6 +160,8 @@ SNAPSHOT_JS = r"""
   const SEL = 'a[href],button,input,select,textarea,summary,progress,[role],[onclick],[aria-busy="true"],[tabindex]:not([tabindex="-1"]),[contenteditable="true"],dialog[open],label';
   const vw = window.innerWidth, vh = window.innerHeight;
   const out = [];
+  const nodes = new Map();
+  window.__guaSnapshotNodes = nodes;
   const texts = [];
   let gid = 0;
   const roots = [document];
@@ -180,6 +189,7 @@ SNAPSHOT_JS = r"""
       }
       el.setAttribute('data-gua-id', fid + '-' + String(gid));
       const secure = secureOf(el);
+      nodes.set(domId(el, fid), el);
       const se = submitElOf(el);
       let vnow = el.getAttribute('aria-valuenow'), vmax = el.getAttribute('aria-valuemax');
       if (el.tagName === 'PROGRESS' && el.hasAttribute('value')) { vnow = String(el.value); vmax = String(el.max); }
@@ -190,7 +200,7 @@ SNAPSHOT_JS = r"""
         checked: (el.type === 'checkbox' || el.type === 'radio') ? !!el.checked : null, covered: covered,
         href: el.getAttribute('href') || '', secure: secure, autocomplete: el.getAttribute('autocomplete') || '',
         form_submit: (el.form ? submitOf(el) : ''), busy: el.getAttribute('aria-busy') === 'true' ? 'true' : '',
-        dom_id: domId(el, fid), form_submit_id: (se ? domId(se, fid) : ''),
+        dom_id: domId(el, fid), document_id: documentId(), form_submit_id: (se ? domId(se, fid) : ''),
         valuenow: vnow, valuemax: vmax});
     }
   }
@@ -215,7 +225,7 @@ FOCUS_JS = r"""
   return {kind: 'element', tag: a.tagName.toLowerCase(), role: a.getAttribute('role') || '',
           type: a.getAttribute('type') || '', name: nameOf(a).slice(0, 120), secure: secureOf(a),
           autocomplete: a.getAttribute('autocomplete') || '', form_submit: submitOf(a),
-          dom_id: domId(a, fid), form_submit_id: submitId(a, fid),
+          dom_id: domId(a, fid), document_id: documentId(), form_submit_id: submitId(a, fid),
           rect: [r.left, r.top, r.right, r.bottom], disabled: !!a.disabled, editable: !!a.isContentEditable};
 }
 """
@@ -304,6 +314,7 @@ def to_url(u: str, base_dir: Optional[Path] = None) -> str:
 
 class WebEnv(Env):
     platform = "web"
+    targeted_input = True
     scroll_unit_px = 100
 
     def __init__(self, start_url: str = "about:blank", headless: bool = True,
@@ -336,6 +347,26 @@ class WebEnv(Env):
         self._last_focus_secure: bool = False
         self._last_focus_dom_id: Optional[str] = None
         self._last_focus_page = self._last_focus_frame = self._last_focus_handle = None
+        self._snapshot_id = ""
+        self._snapshot_page = None
+        self._snapshot_nodes: dict = {}
+        self._bound_elements: dict = {}
+
+    def bind_action(self, action: Action, obs: Observation) -> Action:
+        return replace(action, binding={"snapshot_id": obs.snapshot_id})
+
+    def element_identity(self, element):
+        doc, node = element.attrs.get("document_id"), element.attrs.get("dom_id")
+        return (doc, node) if doc and node else None
+
+    def _release_snapshot(self):
+        for _, nodes in self._snapshot_nodes.values():
+            try:
+                nodes.dispose()
+            except Exception:
+                pass
+        self._snapshot_nodes.clear()
+        self._bound_elements.clear()
 
     # ---------------------------------------------------------------- 生命周期
     def _ensure(self) -> None:
@@ -622,6 +653,7 @@ class WebEnv(Env):
         self.page.goto("about:blank")
 
     def close(self) -> None:
+        self._release_snapshot()
         try:
             if self._browser:
                 self._browser.close()
@@ -655,6 +687,9 @@ class WebEnv(Env):
 
     def _snapshot(self, pg) -> tuple[list[dict], str]:
         """逐个 frame 抽取元素（主 frame + 同源 / 跨源 iframe），矩形换算到主视口坐标。"""
+        self._release_snapshot()
+        self._snapshot_id = uuid.uuid4().hex
+        self._snapshot_page = pg
         items: list[dict] = []
         texts: list[str] = []
         for fi, frame in enumerate(pg.frames):
@@ -663,6 +698,7 @@ class WebEnv(Env):
                 if off is None:
                     continue
                 snap = frame.evaluate(SNAPSHOT_JS, [self.max_elements * 2, fi])
+                self._snapshot_nodes[str(fi)] = (frame, frame.evaluate_handle("() => window.__guaSnapshotNodes"))
             except Exception:  # noqa: BLE001  — frame 正在跳转 / 已分离
                 if frame is pg.main_frame:
                     raise
@@ -831,7 +867,7 @@ class WebEnv(Env):
             match.value = None
         if raw["attrs"].get("form_submit"):
             match.attrs["form_submit"] = raw["attrs"]["form_submit"]
-        for key in ("dom_id", "form_submit_id"):     # 稳定 DOM 身份（审查条目 5）
+        for key in ("dom_id", "document_id", "form_submit_id"):     # 稳定 DOM 身份
             if info.get(key):
                 match.attrs[key] = info[key]
 
@@ -839,7 +875,10 @@ class WebEnv(Env):
         self._ensure()
         self._enforce()
         pg = self._alive_active()
-        img = Image.open(io.BytesIO(pg.screenshot(type="png"))).convert("RGB")
+        # Playwright's default caret hiding temporarily injects a stylesheet.
+        # That is an observer-visible DOM mutation caused by the screenshot
+        # itself. Preserve the caret so real page changes remain distinguishable.
+        img = Image.open(io.BytesIO(pg.screenshot(type="png", caret="initial"))).convert("RGB")
         title, url, text, elems = "", "", "", []
         focus_state = ""
         try:
@@ -862,6 +901,7 @@ class WebEnv(Env):
             self._last_focus_secure = bool(info.get("secure")) if isinstance(info, dict) else False
             self._last_focus_dom_id = info.get("dom_id") if isinstance(info, dict) else None
             self._remember_focus_handle(pg)
+            self._bound_elements = {e.id: e for e in elems}
         wins = []
         for p in self._ctx.pages:
             try:
@@ -871,7 +911,120 @@ class WebEnv(Env):
         return Observation(screenshot=img, timestamp=time.time(), screen_size=img.size, dpi_scale=1.0,
                            active_window=title or url, active_process=urlparse(url).netloc or url[:40],
                            windows=wins, elements=elems, platform="web", url=url, text=text, cursor=self.cursor,
-                           focus_state=focus_state)
+                           focus_state=focus_state, snapshot_id=self._snapshot_id if with_elements else "")
+
+    def _stability(self, pg):
+        states = []
+        for frame in pg.frames:
+            state = frame.evaluate(STABILITY_JS)
+            states.append((frame, state))
+        return states
+
+    @staticmethod
+    def _quiet(states, quiet_ms):
+        return bool(states) and all(s["ready"] and not s["animating"] and s["quiet"] >= quiet_ms
+                                    for _, s in states)
+
+    @staticmethod
+    def _same_state(before, after):
+        return (len(before) == len(after) and all(f1 is f2 and s1["document"] == s2["document"]
+                and s1["seq"] == s2["seq"] for (f1, s1), (f2, s2) in zip(before, after)))
+
+    def wait_until_stable(self, timeout=5.0, interval=0.4, threshold=0.002, stable_frames=2):
+        """Cheap DOM polling followed by pixel checks and a fresh full snapshot.
+
+        Never reuse an old screenshot as completion evidence. DOM quiet alone is
+        insufficient for canvas, CSS animations or changes while capturing.
+        """
+        from ..verify.diff import frame_diff
+        self._ensure()
+        deadline = time.monotonic() + max(0, timeout)
+        quiet_ms = max(60, min(interval * 1000, 120))
+        sample_ms = max(10, min(interval * 1000, 60))
+        prev, calm = self.observe(False), 0
+        pg = self._alive_active()
+        while time.monotonic() < deadline:
+            try:
+                pg.wait_for_timeout(min(sample_ms, max(0, (deadline-time.monotonic()) * 1000)))
+                if self._alive_active() is not pg:
+                    pg, calm = self._alive_active(), 0
+                    prev = self.observe(False)
+                states = self._stability(pg)
+                if not self._quiet(states, quiet_ms) or self._nav_in_flight or self._hops:
+                    calm = 0
+                    continue
+                # The last candidate is already a full observation; do not
+                # capture a redundant fourth image after two stable comparisons.
+                full = calm >= max(1, stable_frames) - 1
+                cur = self.observe(with_elements=full)
+                after = self._stability(pg)
+                if (self._alive_active() is pg and self._same_state(states, after)
+                        and self._quiet(after, quiet_ms)
+                        and frame_diff(prev.screenshot, cur.screenshot) < threshold):
+                    calm += 1
+                    if full and calm >= max(1, stable_frames):
+                        return cur, True
+                else:
+                    calm = 0
+                prev = cur
+            except Exception:  # A frame can detach or navigate between probes.
+                calm = 0
+        return self.observe(), False
+
+    def _check_bound_element(self, handle, element):
+        info = handle.evaluate("(el, fid) => { " + _JS_HELPERS + """
+          if (!el.isConnected) return null;
+          return {tag:el.tagName.toLowerCase(), role:el.getAttribute('role') || '',
+            type:el.getAttribute('type') || '', name:nameOf(el), secure:secureOf(el),
+            disabled:!!el.disabled, href:el.getAttribute('href') || '',
+            form_submit:submitOf(el), form_submit_id:submitId(el, fid),
+            checked:['checkbox','radio'].includes(el.type) ? !!el.checked : null};
+        }""", int(element.attrs.get("frame") or 0))
+        if info is None:
+            raise ValueError("original element detached")
+        raw = web_raws([dict(info, rect=element.rect)])[0]
+        name = re.sub(r"\s+", " ", raw["name"]).strip()[:100]
+        if (not raw["enabled"] or name != element.name or raw["role"] != element.role
+                or raw["is_password"] != element.is_password or raw["checked"] != element.checked
+                or info["href"] != element.attrs.get("href", "")
+                or info["form_submit"] != element.attrs.get("form_submit", "")
+                or info["form_submit_id"] != element.attrs.get("form_submit_id", "")):
+            raise ValueError("element semantics changed")
+
+    def _bound_click(self, pg, a: Action, t0: float) -> ExecResult:
+        """Use the original node, never a new node that reuses its candidate ID."""
+        element = self._bound_elements.get(a.element_id)
+        handle = None
+        try:
+            if element is None:
+                raise ValueError("element binding unavailable")
+            frame, nodes = self._snapshot_nodes[element.attrs.get("frame") or "0"]
+            handle = nodes.evaluate_handle("(nodes, id) => nodes.get(id)", element.attrs.get("dom_id")).as_element()
+            if handle is None or frame not in pg.frames:
+                raise ValueError("original element detached")
+            self._check_bound_element(handle, element)
+            box = handle.bounding_box()
+            if box is None:
+                raise ValueError("original element hidden")
+            x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            if not 0 <= x < self.viewport[0] or not 0 <= y < self.viewport[1]:
+                return ExecResult(False, "out_of_bounds: bound element is offscreen", t0, time.time())
+            # Playwright performs live visibility, geometry and hit-target checks.
+            # No force=True or JS click: overlays and trusted-input behavior matter.
+            handle.hover(timeout=350)
+            self._check_bound_element(handle, element)  # Hover handlers can replace or relabel a target.
+            handle.click(timeout=350, no_wait_after=True)
+            self.cursor = (int(x), int(y))
+            return ExecResult(True, "", t0, time.time(), route="browser_element")
+        except Exception as exc:
+            return ExecResult(False, f"stale_target: bound element unavailable ({type(exc).__name__}); observe again",
+                              t0, time.time(), route="browser_element")
+        finally:
+            if handle is not None:
+                try:
+                    handle.dispose()
+                except Exception:
+                    pass
 
     # ---------------------------------------------------------------- 执行
     def _domain_ok(self, url: str) -> bool:
@@ -884,7 +1037,7 @@ class WebEnv(Env):
             return ExecResult(False, f"invalid_action: {type(e).__name__}: {str(e)[:160]}",
                               time.time(), time.time())
         r = self._execute(a)
-        if a.x is not None and a.y is not None and a.is_pointer:
+        if r.route != "browser_element" and a.x is not None and a.y is not None and a.is_pointer:
             self.cursor = (int(a.x2), int(a.y2)) if a.type == "drag" and a.x2 is not None else (int(a.x), int(a.y))
         if self.allowed_domains:
             try:
@@ -952,7 +1105,7 @@ class WebEnv(Env):
                 if not self._handle_focused(handle):
                     return ExecResult(False, "blocked_by_safety: focus changed before submit", t0, time.time())
                 kb.press("Enter")
-            return ExecResult(True, "", t0, time.time())
+            return ExecResult(True, "", t0, time.time(), route="browser_type")
         except Exception as e:  # noqa: BLE001
             return ExecResult(False, f"{type(e).__name__}: {str(e)[:200]}", t0, time.time())
 
@@ -962,12 +1115,17 @@ class WebEnv(Env):
         if not self.supports(a.type):
             return ExecResult(False, f"unsupported action {a.type} on web", t0, time.time())
         pg = self._alive_active()
+        if a.binding and a.type not in {"navigate", "back", "focus_window", "wait"}:
+            if a.binding.get("snapshot_id") != self._snapshot_id or pg is not self._snapshot_page:
+                return ExecResult(False, "stale_target: page changed; observe again", t0, time.time())
         w, h = self.viewport
         err = self._bounds_error(a, w, h)
         if err:
             return ExecResult(False, err, t0, time.time())
         if a.type == "type":
             return self._do_type(pg, a, t0)
+        if a.binding and a.type == "click" and a.element_id is not None:
+            return self._bound_click(pg, a, t0)
         try:
             m, kb = pg.mouse, pg.keyboard
             if a.type == "click":
@@ -1014,7 +1172,7 @@ class WebEnv(Env):
             elif a.type == "focus_window":
                 if not self.focus_window(a.text or ""):
                     return ExecResult(False, f"window_not_found {a.text!r}", t0, time.time())
-            return ExecResult(True, "", t0, time.time())
+            return ExecResult(True, "", t0, time.time(), route="browser_input")
         except Exception as e:  # noqa: BLE001
             return ExecResult(False, f"{type(e).__name__}: {str(e)[:200]}", t0, time.time())
 

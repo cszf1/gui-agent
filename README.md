@@ -1,7 +1,7 @@
 # gui-agent（`gua`）：跨平台、可验证执行与失败恢复的 GUI Agent
 
-SRTP 研究代码 **v0.3.1**（v0.3 修复第一轮代码审查的 12 个问题；v0.3.1 修复第二轮审查的 7 个问题及自查发现的同类问题，
-见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)）。当前工作树包含第三、第四轮安全修订，**尚未发布新版本**。
+当前源码 **v0.5.0**：Windows 优先的桌面 App、控件原生执行、观察与动作绑定、快速稳定等待和结果核验。
+此前 v0.3/v0.3.1 的四轮安全审查修复一并保留，见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)。
 前身是只支持 Windows 的 `win-gui-agent`（`wga`）。研究方向 A：**执行验证与失败恢复**
 （时间失配：页面没刷新就判断、窗口被最小化/抢焦点、目标在屏幕外……）。
 
@@ -12,7 +12,7 @@ SRTP 研究代码 **v0.3.1**（v0.3 修复第一轮代码审查的 12 个问题�
 - 审查修复对照（四轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
 - 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)
 
-## 桌面 App（v0.4 开发版）
+## 桌面 App（v0.5 开发版）
 
 新增 Windows 优先的聊天桌面 App：在设置里填写 **Base URL、API Key 和模型名称**，然后输入自然语言任务。
 支持本机桌面和独立浏览器操作、执行画面、步骤记录、确认操作、暂停/接管、停止及运行报告。
@@ -20,10 +20,20 @@ SRTP 研究代码 **v0.3.1**（v0.3 修复第一轮代码审查的 12 个问题�
 
 - [启动、模型配置和 Windows 打包](desktop/README.md)
 - [架构、语言选择与 ZCode/Codex/Claude/Muse/Grok Bot 官方参考](docs/desktop-app.md)
+- [v0.5 执行改进、Cua 参考和可重复基准](docs/execution-improvements.md)
 
 无 API Key 时可以从界面试运行本地表单。此演示使用预设动作，不代表真实模型自主任务的成功率。
 
 ## 更新日志
+
+### v0.5.0（源码与 Windows 安装包 CI；未发布 GitHub Release）
+
+- Windows 按观察中的控件身份使用 UIA Invoke/Toggle/Select/Focus；不支持时使用经检查的新位置，原生调用异常后不补点。
+- 浏览器点击绑定原始 DOM 节点，检查身份、语义、当前可见位置与遮挡；页面或控件被替换时重新判断。
+- `type` 可指定输入框元素 ID，先验证焦点再输入，减少模型往返；点击与输入/提交分别经过安全检查。
+- 浏览器按 DOM、有限动画、可读取 Canvas 的变化等待，再进行像素检查；Windows 更早采样，并保留全量收尾观察。
+- App 显示运行时间、模型调用数和界面等待时间；报告记录分阶段耗时与实际执行路径。
+- 回归测试、真实 Windows WinForms/UIA 检查和修改前后固定任务基准，详见执行改进文档。
 
 ### 未发布（第四轮审查修复）
 

@@ -61,6 +61,7 @@ class Grounder:
             e = obs.element(element_id)
             if e and e.enabled:
                 return e, "a11y"
+            return None  # An invalid explicit ID must not select another same-name control.
         t = _norm(target)
         if not t:
             return None
@@ -107,6 +108,8 @@ class Grounder:
     def ground(self, obs: Observation, target: str, element_id: Optional[int] = None,
                zoom_around: Optional[tuple[int, int]] = None) -> Optional[GroundingResult]:
         m = self.match_a11y(obs, target or "", element_id)
+        if self.use_a11y and element_id is not None and m is None:
+            return None
         if m is not None and zoom_around is None:
             e, src = m
             x, y = e.center

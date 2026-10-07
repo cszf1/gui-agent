@@ -92,6 +92,9 @@ def is_sensitive_type(a, obs=None, state: Optional[str] = None) -> bool:
     """这个动作携带的文字是否必须脱敏（只看输入目标，不看安全规则的结论）。"""
     st = state or focus_target(obs)[1]
     if a.type == "type":
+        if a.element_id is not None:
+            element = obs.element(a.element_id) if obs is not None else None
+            st = ("password" if is_password_el(element) else "normal") if element is not None and element.role == "textbox" else "unknown"
         if not a.text:
             return False
         if SECRET_RE.search(a.text):

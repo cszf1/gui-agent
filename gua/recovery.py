@@ -98,6 +98,9 @@ class RecoveryPolicy:
         if not self.enabled:
             return RecoveryPlan(Strategy.REPLAN, note="recovery disabled")
         err0 = (check.signals or {}).get("exec_error", "") or ""
+        if "stale_target" in err0 or "native_action_error" in err0 or "observation_invalidated" in err0:
+            self.history.append(f"{check.verdict.value}->{Strategy.REPLAN.value}")
+            return RecoveryPlan(Strategy.REPLAN, note="observe the current state before deciding; never replay the old action")
         if "blocked_by_safety" in err0:      # 拒绝是终止性的：绝不重试同一动作（fixed_retry 也一样）
             self.history.append(f"{check.verdict.value}->{Strategy.REPLAN.value}")
             return RecoveryPlan(Strategy.REPLAN, note="action refused by safety policy; it will not be retried, "

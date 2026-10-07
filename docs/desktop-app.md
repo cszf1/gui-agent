@@ -57,6 +57,8 @@ API Key 在 Windows 使用操作系统保护加密；截图、敏感输入与模
 
 ## 验证范围
 
+v0.5 增加了原生控件路径、元素身份绑定、指定字段输入、界面等待优化与耗时统计，详见 [执行改进与基准](execution-improvements.md)。
+
 桌面端测试覆盖配置、加密存储、事件状态，以及真实 Electron → Python → Chromium 执行链路。
 模型 API 测试使用本地 HTTP 服务提供确定性的回复，验证协议和实际操作；不据此报告真实模型自主成功率。
-Windows 安装包由 Windows CI 构建并运行冻结引擎的浏览器任务。Windows 本机应用操作仍需在交互式 Windows 桌面实测，不能由 Linux 浏览器验证代替。
+Windows CI 构建安装包，运行冻结引擎的浏览器任务及真实 WinForms/UIA 控件检查。原生检查范围有限，复杂本机应用仍需在交互式 Windows 桌面实测，不能由 Linux 浏览器验证代替。

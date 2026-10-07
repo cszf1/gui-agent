@@ -43,6 +43,7 @@ class PyAutoGUIInput:
         self.scale = scale
         self.offset = offset
         self.type_fn = type_fn
+        self.focus_check = None
         self.scroll_clicks = scroll_clicks  # 一个“格”对应 pyautogui.scroll 的单位数（Windows 120/格）
 
     def _xy(self, x: float, y: float) -> tuple[int, int]:
@@ -104,15 +105,20 @@ class PyAutoGUIInput:
             else:
                 pg.hscroll(n if a.direction == "right" else -n)
         elif a.type == "type":
+            check = self.focus_check or (lambda: None)
+            check()
             mod = "command" if self.platform == "macos" else "ctrl"
             if a.clear:
                 pg.hotkey(mod, "a")
+                check()
                 pg.press("backspace")
+                check()
             if self.type_fn:
                 self.type_fn(a.text or "")
             else:
                 pg.write(a.text or "", interval=0.01)
             if a.submit:
+                check()
                 pg.press("enter")
         elif a.type == "hotkey":
             pg.hotkey(*[norm_key(k, self.platform) for k in a.keys])
@@ -131,11 +137,17 @@ class PyAutoGUIInput:
         return ExecResult(True, "", t0, time.time())
 
 
-def clipboard_type(text: str, platform: str) -> None:
+def clipboard_type(text: str, platform: str, *, check_focus=None) -> None:
     """非 ASCII（中文）走剪贴板粘贴，避开输入法干扰（v0.1 在 Windows 上的做法，推广到三平台）。"""
     import pyautogui
     if text.isascii():
-        pyautogui.write(text, interval=0.01)
+        if check_focus is None:
+            pyautogui.write(text, interval=0.01)
+        else:
+            for char in text:
+                check_focus()
+                pyautogui.write(char, interval=0)
+                check_focus()
         return
     import pyperclip
     old = None
@@ -145,7 +157,11 @@ def clipboard_type(text: str, platform: str) -> None:
         pass
     pyperclip.copy(text)
     try:
+        if check_focus is not None:
+            check_focus()
         pyautogui.hotkey("command" if platform == "macos" else "ctrl", "v")
+        if check_focus is not None:
+            check_focus()
         time.sleep(0.15)
     finally:
         # v0.3.1：无论如何都不把输入的文字（可能是密码）留在系统剪贴板上：恢复旧内容，读不到旧内容就清空

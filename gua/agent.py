@@ -38,6 +38,7 @@ from .logger import TrajectoryLogger
 from .memory import Memory, Milestone, StepRecord
 from .planner import Actor, Planner, Subgoal, UITarsActor
 from .policy import CapabilityPolicy
+from .performance import Performance
 from .recovery import RecoveryPolicy, Strategy
 from .reflection import Reflector
 from .safety import SafetyGuard
@@ -82,6 +83,7 @@ class RunResult:
     answer: str = ""
     safety_events: list[dict] = field(default_factory=list)
     policy: dict = field(default_factory=dict)
+    performance: dict = field(default_factory=dict)
 
 
 StepHook = Callable[[int, "GUIAgent"], None]
@@ -109,8 +111,9 @@ class GUIAgent:
             recovery="none" if not recovery.enabled else "fixed_retry" if recovery.fixed_retry else "classified")
         self.step_no = 0
         self.before_step: list[StepHook] = []
-        self._t0 = time.time()
+        self._t0 = time.monotonic()
         self._answer = ""
+        self.performance = Performance()
         # 秘密清洗器与日志 / 安全闸门共用（日志落盘、评测结果行、RunResult、确认回调都经过它）。
         # 配置里的秘密以 explicit=True 登记：即便短于 min_len（例如 4 位 PIN）也清洗、并立即置敏感
         # → 该次运行后续不再向任何模型发送截图（严格阻断，见 _note_obs / EgressGate）。
@@ -129,13 +132,15 @@ class GUIAgent:
 
     # ------------------------------------------------------------------ helpers
     def _settle(self) -> tuple[Observation, bool]:
-        obs, stable = self.env.wait_until_stable(timeout=self.cfg.settle_timeout, interval=self.cfg.settle_interval)
+        with self.performance.measure("settle"):
+            obs, stable = self.env.wait_until_stable(timeout=self.cfg.settle_timeout, interval=self.cfg.settle_interval)
         self._note_obs(obs)
         return obs, stable
 
     def _observe(self, *args, **kwargs) -> Observation:
         """所有观察的统一入口：拿到观察就立刻登记敏感信号（早于任何模型请求与 logger.shot）。"""
-        obs = self.env.observe(*args, **kwargs)
+        with self.performance.measure("observe"):
+            obs = self.env.observe(*args, **kwargs)
         self._note_obs(obs)
         return obs
 
@@ -198,13 +203,22 @@ class GUIAgent:
         b = self.budget.exhausted()
         if b:
             return "budget_exhausted", b
-        if self.cfg.max_seconds and time.time() - self._t0 > self.cfg.max_seconds:
+        if self.cfg.max_seconds and time.monotonic() - self._t0 > self.cfg.max_seconds:
             return "time_limit", f"wall-clock limit {self.cfg.max_seconds}s"
         return None
 
     def _resolve(self, a: Action, obs: Observation, zoom_around=None) -> tuple[Action, str]:
         """坐标换算 + 把 target 描述 / element_id 变成截图像素坐标。"""
         w, h = obs.screenshot.size
+        if a.type == "type" and (a.element_id is not None or a.target):
+            if not self.env.targeted_input:
+                return a, "grounding_failed"
+            match = self.grounder.match_a11y(obs, a.target or "", a.element_id)
+            if match is None or match[0].role != "textbox":
+                return a, "grounding_failed"
+            a.element_id = match[0].id
+            a.x, a.y = match[0].center
+            return a, match[1]
         # 动作自带的 transform（actor 回复里“实际发送尺寸”）优先，见 coords.ImageTransform
         to_pixel_action(a, w, h, getattr(self.actor, "max_pixels", getattr(self.grounder.mapper, "max_pixels",
                                                                            1280 * 28 * 28)))
@@ -213,6 +227,8 @@ class GUIAgent:
             if g is None:
                 return a, "grounding_failed"
             a.x, a.y = g.x, g.y
+            if g.element is not None:
+                a.element_id = g.element.id
             if a.type == "drag" and a.x2 is None:
                 g2 = self.grounder.ground(obs, a.target2 or a.text or "")
                 if g2 is None:
@@ -245,6 +261,28 @@ class GUIAgent:
                 f"available names: {names})")
 
     # ------------------------------------------------------------------ 统一执行出口（安全闸门）
+    def _targeted_type(self, a: Action, obs: Optional[Observation], origin: str) -> ExecResult:
+        epoch = self.env.input_epoch
+        element = obs.element(a.element_id) if obs is not None and a.element_id is not None else None
+        identity = self.env.element_identity(element) if element is not None else None
+        if not self.env.targeted_input or element is None or element.role != "textbox" or identity is None:
+            now = time.time()
+            return ExecResult(False, "stale_target: input target could not be identified", now, now)
+        focus = Action("click", x=a.x, y=a.y, element_id=element.id, target=a.target, binding=a.binding)
+        result = self._execute_gated(focus, obs, origin + ":focus")
+        if not result.ok:
+            return result
+        fresh = self._observe()
+        focused, _ = focus_target(fresh)
+        if (self.env.input_epoch != epoch or focused is None or self.env.element_identity(focused) != identity
+                or focused.is_password != element.is_password or focused.role != "textbox"):
+            now = time.time()
+            return ExecResult(False, "stale_target: intended field did not retain focus; no text sent", now, now)
+        # Input and submit get a second, independent consent check using the
+        # actual focus. Never batch across a navigation or an unverified focus.
+        return self._execute_gated(replace(a, element_id=None, target=None, x=None, y=None, binding=None),
+                                   fresh, origin + ":input")
+
     def _execute_gated(self, a: Action, obs: Optional[Observation], origin: str = "actor") -> ExecResult:
         """所有真正发往环境的动作都从这里走：先过安全闸门，拒绝即返回 blocked_by_safety（终止性，不重试）。
 
@@ -255,6 +293,10 @@ class GUIAgent:
           3) 只有放行才把 exec_a 发往环境。
         原动作 a 与安全摘要保持脱敏；未知占位符不静默输入原文，而是返回 blocked_by_safety 并说明缺少配置。
         """
+        if a.type == "type" and a.element_id is not None:
+            return self._targeted_type(a, obs, origin)
+        if obs is not None and a.binding is None:
+            a = self.env.bind_action(a, obs)
         state = self.guard.focus(obs)[1]
         view, _ = self._view(a, obs)                 # 原动作的安全摘要（占位符 / 敏感文本一律脱敏）
         exec_a = a
@@ -281,7 +323,9 @@ class GUIAgent:
         if not approved:
             t = time.time()
             return ExecResult(False, f"blocked_by_safety: {why}", t, t)
-        res = self.env.execute(exec_a)
+        with self.performance.measure("execute"):
+            res = self.env.execute(exec_a)
+        self.performance.execution(res.route)
         res.error, res.output = self._scrub(res.error), self._scrub(res.output)   # 执行层报错可能回显输入
         if not res.ok and "blocked_by_safety" in (res.error or ""):
             self.guard.remember_denial(a, obs, res.error)      # 环境层（例如 Web 白名单）拦截也是终止性的
@@ -314,7 +358,8 @@ class GUIAgent:
 
     # ------------------------------------------------------------------ main
     def run(self, task: str) -> RunResult:
-        self._t0 = time.time()
+        self._t0 = time.monotonic()
+        self.performance = Performance()
         self._replans = 0
         try:
             return self._run(task)
@@ -337,7 +382,8 @@ class GUIAgent:
         self._replans = 0
         obs = self._observe()
         self._task_baseline = obs
-        subgoals = self.planner.plan(task, obs)
+        with self.performance.measure("plan"):
+            subgoals = self.planner.plan(task, obs)
         if self.log:
             self.log.meta(task_text=task, platform=self.cfg.platform, task_window=self.cfg.task_window,
                           policy=self.policy.to_dict())
@@ -372,8 +418,9 @@ class GUIAgent:
             if not self.cfg.final_check:
                 return self._finish("done", True, self._replans, "final check disabled")
             fobs, fstable = self._settled_for_check(self._task_baseline)
-            final = self.verifier.check_final(fobs, task, subgoals, self.cfg.final_l2, stable=fstable,
-                                              baseline=self._task_baseline)
+            with self.performance.measure("verify"):
+                final = self.verifier.check_final(fobs, task, subgoals, self.cfg.final_l2, stable=fstable,
+                                                  baseline=self._task_baseline)
             final.evidence = self._scrub(final.evidence)
             if self.log:
                 self.log.step(kind="final_check", verdict=final.verdict, evidence=final.evidence, level=final.level,
@@ -418,10 +465,11 @@ class GUIAgent:
                 feedback = "The task window had lost focus; it was restored before acting."
                 continue
             try:
-                action, thought = self.actor.next_action(actor_task, sg, total, before,
-                                                         self.mem.history_text(sg.id),
-                                                         self.mem.milestones_text(), self._scrub(feedback),
-                                                         notes=self._scrub(self.mem.notes_text()))
+                with self.performance.measure("decide"):
+                    action, thought = self.actor.next_action(actor_task, sg, total, before,
+                                                             self.mem.history_text(sg.id),
+                                                             self.mem.milestones_text(), self._scrub(feedback),
+                                                             notes=self._scrub(self.mem.notes_text()))
                 if not isinstance(action, Action):
                     raise ActionParseError("not_object", f"actor returned {type(action).__name__}, not an Action")
                 action.validate()
@@ -460,7 +508,8 @@ class GUIAgent:
                 continue
 
             # ---- 定位
-            action, src = self._resolve(action, before, zoom_around)
+            with self.performance.measure("ground"):
+                action, src = self._resolve(action, before, zoom_around)
             zoom_around = None
             if src == "grounding_failed":
                 feedback = f"Could not locate {action.target!r} on screen; describe it differently, use element_id, or another path."
@@ -474,9 +523,11 @@ class GUIAgent:
                 after, stable = before, True
             else:
                 after, stable = self._settle()
-            check = self.verifier.check_step(before, after, action, res, stable, expected=sg.expected,
-                                             task_window=self.cfg.task_window, expect_text=sg.expect_text or None,
-                                             action_desc=view_s)
+            with self.performance.measure("verify"):
+                check = self.verifier.check_step(before, after, action, res, stable, expected=sg.expected,
+                                                 task_window=self.cfg.task_window, expect_text=sg.expect_text or None,
+                                                 action_desc=view_s)
+            check.signals["execution_route"] = res.route
             check.evidence = self._scrub(check.evidence)
             rec = StepRecord(self.step_no, sg.id, view_s, check.verdict.value, check.evidence)
 
@@ -539,8 +590,9 @@ class GUIAgent:
         if not self.cfg.verify_goals:
             return True, "not verified"
         obs, stable = self._settled_for_check(self._sg_baseline)
-        c: Check = self.verifier.check_goal(obs, sg.goal, sg.evidence or sg.expected, sg.expect_text or None,
-                                            stable=stable, baseline=self._sg_baseline)
+        with self.performance.measure("verify"):
+            c: Check = self.verifier.check_goal(obs, sg.goal, sg.evidence or sg.expected, sg.expect_text or None,
+                                                stable=stable, baseline=self._sg_baseline)
         return c.verdict == Verdict.SUCCESS, self._scrub(f"[{c.level}] {c.evidence}")
 
     def _log_step(self, rec: StepRecord, before, after, action_view: dict, src, check: Check, thought: str) -> None:
@@ -552,14 +604,14 @@ class GUIAgent:
                       window=after.active_window, url=after.url,
                       before=self.log.shot(rec.step, "before", before.screenshot),
                       after=self.log.shot(rec.step, "after", after.screenshot),
-                      calls_so_far=self.budget.calls)
+                      calls_so_far=self.budget.calls, performance=self.performance.summary())
 
     def _finish(self, status: str, claimed: bool, replans: int, msg: str) -> RunResult:
         assert status in TERMINAL_STATUSES, status
         claimed = claimed and status == "done"          # 只有 done 才算“宣称完成”
         r = RunResult(status, claimed, self.step_no, replans, list(self.recovery.history), self.budget,
-                      time.time() - self._t0, self._scrub(msg), self._scrub(self._answer),
-                      self.scrubber.scrub_obj(list(self.guard.log)), self.policy.to_dict())
+                      time.monotonic() - self._t0, self._scrub(msg), self._scrub(self._answer),
+                      self.scrubber.scrub_obj(list(self.guard.log)), self.policy.to_dict(), self.performance.summary())
         if self.log:
             self.log.meta(result=r)
         return r

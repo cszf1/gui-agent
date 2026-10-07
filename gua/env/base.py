@@ -95,6 +95,7 @@ class Observation:
     # v0.3.1：键盘焦点探测结果。"known"（elements 里有 focused 元素）| "none"（明确没有可输入焦点）|
     # "unknown"（无法确定，例如跨源 iframe 探测失败）| ""（平台未报告）。安全闸门与脱敏据此保守处理，见 gua.sensitive。
     focus_state: str = ""
+    snapshot_id: str = ""                   # Executor-owned generation, not an element selector
 
     def element(self, eid: int) -> Optional[UIElement]:
         for e in self.elements:
@@ -125,17 +126,28 @@ class ExecResult:
     started: float = 0.0
     finished: float = 0.0
     output: str = ""         # 例如 ask_user 的回答
+    route: str = ""          # Actual execution path for measurement, not a success claim
 
 
 class Env(ABC):
     platform: str = "base"
     scroll_unit_px: int = 100          # 一格滚动大约多少截图像素（恢复策略按距离计算滚动格数）
+    targeted_input: bool = False
+    input_epoch: int = 0
 
     @abstractmethod
     def observe(self, with_elements: bool = True) -> Observation: ...
 
     @abstractmethod
     def execute(self, action: Action) -> ExecResult: ...
+
+    def bind_action(self, action: Action, obs: Observation) -> Action:
+        """Bind to the observation used for consent/decision; supported by native/web backends."""
+        return action
+
+    def element_identity(self, element: UIElement):
+        """Stable identity within an app/document, for focus-and-type verification."""
+        return None
 
     def focus_window(self, title_substring: str) -> bool:
         return False
@@ -175,11 +187,11 @@ class Env(ABC):
         返回 (最后一帧观察, 是否稳定)。方向 A 的第一道关口：用加载中的截图做判断是时间失配的主要来源。
         """
         from ..verify.diff import frame_diff
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         prev = self.observe(with_elements=False)
         calm = 0
-        while time.time() < deadline:
-            time.sleep(interval)
+        while time.monotonic() < deadline:
+            time.sleep(min(interval, max(0, deadline - time.monotonic())))
             cur = self.observe(with_elements=False)
             if frame_diff(prev.screenshot, cur.screenshot) < threshold:
                 calm += 1

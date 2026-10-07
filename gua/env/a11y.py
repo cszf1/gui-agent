@@ -405,7 +405,7 @@ def web_raws(items: list[dict[str, Any]]) -> list[dict]:
                 autocomplete_has_password_token(it.get("autocomplete"))
         # dom_id / form_submit_id 只作安全身份（Web / Safety 约定），与旧 form_submit 一起透传，不进模型 brief
         attrs = {}
-        for k, v in (("gid", it.get("gid")), ("dom_id", it.get("dom_id")),
+        for k, v in (("gid", it.get("gid")), ("dom_id", it.get("dom_id")), ("document_id", it.get("document_id")),
                      ("form_submit_id", it.get("form_submit_id")), ("type", it.get("type")),
                      ("href", it.get("href")), ("frame", it.get("frame")),
                      ("form_submit", it.get("form_submit")), ("aria-busy", it.get("busy")),

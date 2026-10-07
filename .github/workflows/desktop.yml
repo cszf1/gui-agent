@@ -38,6 +38,8 @@ jobs:
       - run: pip install -e ".[windows,web]" pyinstaller
       - run: npm ci
         working-directory: desktop
+      - run: python scripts/smoke-windows-native.py
+        working-directory: desktop
       - run: npm run worker:build
         working-directory: desktop
       - run: python scripts/smoke-worker.py

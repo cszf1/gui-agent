@@ -19,16 +19,12 @@
         "expect_text": "alice@example.com",
         "steps": [
           {
-            "click": "Name"
+            "type": "Alice",
+            "target": "Name"
           },
           {
-            "type": "Alice"
-          },
-          {
-            "click": "Email"
-          },
-          {
-            "type": "alice@example.com"
+            "type": "alice@example.com",
+            "target": "Email"
           }
         ]
       },

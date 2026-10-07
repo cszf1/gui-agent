@@ -62,7 +62,7 @@ def model_spec(settings: dict) -> dict:
     if provider == "anthropic" and base.endswith("/v1"):
         base = base[:-3]
     return {"provider": provider, "model": model, "base_url": base,
-            "api_key_env": "GUI_AGENT_DESKTOP_API_KEY", "image_max_side": 1600,
+            "api_key_env": "GUI_AGENT_DESKTOP_API_KEY", "image_max_side": 1280,
             "max_tokens": 2048}
 
 
@@ -200,6 +200,7 @@ class ControlledEnv(Env):
     def __init__(self, env: Env, control: Control, log: StreamingLogger):
         self.inner, self.control, self.log = env, control, log
         self.platform, self.scroll_unit_px = env.platform, env.scroll_unit_px
+        self.targeted_input = env.targeted_input
         self.observed_epoch = -1
         self.last_observation = None
 
@@ -211,6 +212,28 @@ class ControlledEnv(Env):
             self.last_observation = obs
             self.log.preview(obs)
         return obs
+
+    def bind_action(self, action, obs):
+        return self.inner.bind_action(action, obs)
+
+    def element_identity(self, element):
+        return self.inner.element_identity(element)
+
+    @property
+    def input_epoch(self):
+        return self.observed_epoch
+
+    def wait_until_stable(self, timeout=5.0, interval=0.4, **kwargs):
+        # Preserve the backend's event-aware wait. If a pause occurred while it
+        # was waiting, resume with fresh evidence rather than reusing that frame.
+        while True:
+            epoch = self.control.checkpoint()
+            obs, stable = self.inner.wait_until_stable(timeout=timeout, interval=interval, **kwargs)
+            if self.control.checkpoint() != epoch:
+                continue
+            self.observed_epoch, self.last_observation = epoch, obs
+            self.log.preview(obs)
+            return obs, stable
 
     def execute(self, action: Action):
         epoch = self.control.checkpoint()

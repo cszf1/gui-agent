@@ -115,6 +115,10 @@ function RunCard({ run, onError }: { run: Run; onError(text: string): void }) {
       {run.status === 'interrupted' && <p>上次运行已中断，请重新发送任务。</p>}
       {(run.status === 'fail' || run.status === 'uncertain') && <p className="result-copy">{run.result?.status === 'privacy_blocked' ? '检测到敏感界面，视觉操作已停止。请接管并检查当前结果。' : run.result?.message || '当前结果尚未通过核验，请检查界面后继续。'}</p>}
       {lastError && <p className="error-copy">{lastError}</p>}
+      {run.result?.seconds !== undefined && <div className="field-hint" aria-label="运行耗时">
+        用时 {run.result.seconds.toFixed(1)} 秒 · 模型调用 {run.result.budget?.calls || 0} 次
+        {run.result.performance?.phases?.settle && ` · 等待界面 ${run.result.performance.phases.settle.seconds.toFixed(1)} 秒`}
+      </div>}
       {run.reportReady && <button className="text-button" onClick={() => { void window.desktop.openReport(run.id).catch((error) => onError(message(error))) }}><Eye size={14} /> 查看运行报告</button>}
     </div></div>
   </div>

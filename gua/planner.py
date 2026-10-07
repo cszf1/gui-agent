@@ -168,6 +168,10 @@ class Actor:
     def system_prompt(self) -> str:
         bad = UNSUPPORTED.get(self.platform, set())
         docs = dict(_ACTION_DOC)
+        if self.platform in {"web", "windows"} and self.policy.a11y_in_prompts:
+            docs["type"] = ('{"type":"type", "element_id": <textbox id>, "text":"...", "clear": true, '
+                            '"submit": false} (focus and type in one verified action; prefer this for listed fields). '
+                            'Omit element_id to type into the already focused field.')
         if not self.policy.a11y_in_prompts:     # 纯视觉：没有元素列表，也就没有 element_id
             docs["click"] = docs["click"].split(" or with ")[0].replace('"element_id": <id>', '"target":"<visible element description>"')
         lines = [doc for name, doc in docs.items() if name not in bad]

@@ -13,7 +13,11 @@ export interface Settings {
 }
 export interface PublicSettings extends Settings { hasApiKey: boolean; keyPersisted: boolean }
 export interface SettingsInput extends Settings { apiKey?: string; clearApiKey?: boolean }
-export interface RunResult { status: string; claimed_done?: boolean; steps?: number; message?: string; answer?: string; budget?: { calls?: number; prompt_tokens?: number; completion_tokens?: number } }
+export interface RunResult {
+  status: string; claimed_done?: boolean; steps?: number; seconds?: number; message?: string; answer?: string
+  budget?: { calls?: number; seconds?: number; prompt_tokens?: number; completion_tokens?: number }
+  performance?: { phases?: Record<string, { seconds: number; count: number }>; execution_routes?: Record<string, number> }
+}
 export interface AgentEvent {
   type: 'state' | 'log' | 'preview' | 'privacy' | 'request' | 'result' | 'error'
   runId: string

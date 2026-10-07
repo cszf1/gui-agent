@@ -8,6 +8,14 @@
 - 多标签页：新开的页面会被当作“前台窗口”，用于复现“焦点被抢走”的时间失配
 
 安装：pip install "gui-agent[web]" && playwright install chromium
+
+v0.3（审查条目 9）：域名白名单在**浏览器层**强制执行，而不只检查显式 navigate：
+1. context.route 拦截所有导航请求（任意 frame、新标签页、window.open、JS location 跳转）：目标主机不在白名单 → abort；
+2. 白名单内的导航用 route.fetch(max_redirects=0) 先取响应，3xx 的 Location 指向白名单外 → abort（服务器重定向）；
+3. 新页面（popup / target=_blank）若被拦或落在白名单外 → 关闭，前台切回任务页；
+4. 每个动作之后做 URL 复核：主页面若停在白名单外或拦截错误页 → 回到最后一个合法 URL；
+   动作返回 ExecResult(ok=False, "blocked_by_safety: ...")，安全拒绝对该动作是终止性的（不会被重试）。
+被拦截的 URL 记录在 WebEnv.blocked_navigations。可选 block_subresources=True 连图片/脚本等子资源一起拦。
 """
 from __future__ import annotations
 
@@ -15,11 +23,13 @@ import io
 import time
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from PIL import Image
 
 from ..actions import Action
+from ..keys import canonical_key
+from ..urlpolicy import domain_allowed
 from .a11y import finalize, web_raws
 from .base import Env, ExecResult, Observation
 
@@ -70,7 +80,7 @@ SNAPSHOT_JS = r"""
 }
 """
 
-_KEYMAP = {"ctrl": "Control", "control": "Control", "cmd": "Meta", "command": "Meta", "win": "Meta",
+_KEYMAP = {"ctrl": "Control", "control": "Control", "cmd": "Meta", "command": "Meta", "win": "Meta", "insert": "Insert",
            "meta": "Meta", "alt": "Alt", "option": "Alt", "shift": "Shift", "enter": "Enter",
            "return": "Enter", "esc": "Escape", "escape": "Escape", "tab": "Tab", "backspace": "Backspace",
            "delete": "Delete", "del": "Delete", "space": "Space", "up": "ArrowUp", "down": "ArrowDown",
@@ -80,7 +90,7 @@ _KEYMAP = {"ctrl": "Control", "control": "Control", "cmd": "Meta", "command": "M
 
 def pw_key(k: str) -> str:
     k = k.strip()
-    low = k.lower()
+    low = canonical_key(k)
     if low in _KEYMAP:
         return _KEYMAP[low]
     if len(k) == 1:
@@ -107,7 +117,7 @@ class WebEnv(Env):
     def __init__(self, start_url: str = "about:blank", headless: bool = True,
                  viewport: tuple[int, int] = (1280, 800), browser: str = "chromium",
                  allowed_domains: Optional[list[str]] = None, max_elements: int = 150,
-                 slow_mo: int = 0):
+                 slow_mo: int = 0, block_subresources: bool = False):
         self.start_url = start_url
         self.headless = headless
         self.viewport = viewport
@@ -116,8 +126,14 @@ class WebEnv(Env):
         self.max_elements = max_elements
         self.slow_mo = slow_mo
         self._pw = self._browser = self._ctx = None
+        self.block_subresources = block_subresources
         self.page = None          # 任务页面
         self.active = None        # 当前前台页面（可能被新标签页抢走）
+        self.blocked_navigations: list[str] = []   # 被白名单拦下的 URL（全部历史）
+        self._unreported: list[str] = []           # 尚未通过 ExecResult 报告给 agent 的拦截
+        self._blocked_pages: list = []              # 导航被拦的新页面（稍后关闭）
+        self._last_good_url: Optional[str] = None
+        self.cursor: Optional[tuple[int, int]] = None
 
     # ---------------------------------------------------------------- 生命周期
     def _ensure(self) -> None:
@@ -129,13 +145,104 @@ class WebEnv(Env):
         self._browser = launcher.launch(headless=self.headless, slow_mo=self.slow_mo)
         self._ctx = self._browser.new_context(viewport={"width": self.viewport[0], "height": self.viewport[1]},
                                               device_scale_factor=1)
+        if self.allowed_domains:
+            self._ctx.route("**/*", self._route)
         self._ctx.on("page", self._on_page)
         self.page = self.active = self._ctx.new_page()
         if self.start_url:
             self.page.goto(to_url(self.start_url))
+            self._remember_good()
 
     def _on_page(self, p) -> None:
         self.active = p  # 新开页面抢到前台
+
+    # ---------------------------------------------------------------- 白名单（浏览器层）
+    def _record_block(self, url: str, why: str, page=None) -> None:
+        self.blocked_navigations.append(url)
+        self._unreported.append(f"{url} ({why})")
+        if page is not None and page is not self.page:
+            self._blocked_pages.append(page)
+
+    def _route(self, route) -> None:
+        req = route.request
+        url = req.url
+        try:
+            page = req.frame.page
+        except Exception:
+            page = None
+        try:
+            nav = req.is_navigation_request()
+        except Exception:
+            nav = False
+        if not domain_allowed(url, self.allowed_domains):
+            if nav or self.block_subresources:
+                self._record_block(url, "navigation to host outside allowlist" if nav else "subresource", page)
+                route.abort("blockedbyclient")
+            else:
+                route.continue_()
+            return
+        if not nav or urlparse(url).scheme not in {"http", "https"}:
+            route.continue_()
+            return
+        try:                      # 先取响应、不跟随重定向：3xx 指向白名单外则拦截
+            resp = route.fetch(max_redirects=0)
+        except Exception:
+            route.continue_()
+            return
+        if 300 <= resp.status < 400:
+            loc = resp.headers.get("location", "")
+            target = urljoin(url, loc) if loc else ""
+            if target and not domain_allowed(target, self.allowed_domains):
+                self._record_block(target, f"redirect from {url}", page)
+                route.abort("blockedbyclient")
+                return
+        route.fulfill(response=resp)
+
+    def _remember_good(self) -> None:
+        try:
+            u = self.page.url
+        except Exception:
+            return
+        if u and not u.startswith("chrome-error") and domain_allowed(u, self.allowed_domains):
+            self._last_good_url = u
+
+    def _enforce(self) -> None:
+        """动作后 / 观察前复核：关闭被拦或落在白名单外的新页面；主页面离开白名单则回到最后一个合法 URL。"""
+        if not self.allowed_domains or self._ctx is None:
+            return
+        for p in list(self._ctx.pages):
+            if p is self.page:
+                continue
+            try:
+                bad = p in self._blocked_pages or not domain_allowed(p.url, self.allowed_domains) \
+                    or p.url.startswith("chrome-error")
+            except Exception:
+                bad = True
+            if bad:
+                try:
+                    url = p.url
+                    if p not in self._blocked_pages and not url.startswith(("chrome-error", "about:")):
+                        self._record_block(url, "new page outside allowlist")
+                    p.close()
+                except Exception:
+                    pass
+                if self.active is p:
+                    self.active = self.page
+        self._blocked_pages = [p for p in self._blocked_pages if not p.is_closed()]
+        try:
+            u = self.page.url
+        except Exception:
+            return
+        if u.startswith("chrome-error") or not domain_allowed(u, self.allowed_domains):
+            if not u.startswith("chrome-error"):
+                self._record_block(u, "main page left allowlist")
+            if self._last_good_url:
+                try:
+                    self.page.goto(self._last_good_url)
+                except Exception:
+                    pass
+        else:
+            self._remember_good()
 
     def open(self, url: str) -> None:
         self._ensure()
@@ -168,6 +275,7 @@ class WebEnv(Env):
 
     def observe(self, with_elements: bool = True) -> Observation:
         self._ensure()
+        self._enforce()
         pg = self._alive_active()
         img = Image.open(io.BytesIO(pg.screenshot(type="png"))).convert("RGB")
         title, url, text, elems = "", "", "", []
@@ -194,18 +302,30 @@ class WebEnv(Env):
                 pass
         return Observation(screenshot=img, timestamp=time.time(), screen_size=img.size, dpi_scale=1.0,
                            active_window=title or url, active_process=urlparse(url).netloc or url[:40],
-                           windows=wins, elements=elems, platform="web", url=url, text=text)
+                           windows=wins, elements=elems, platform="web", url=url, text=text, cursor=self.cursor)
 
     # ---------------------------------------------------------------- 执行
     def _domain_ok(self, url: str) -> bool:
-        if not self.allowed_domains:
-            return True
-        u = urlparse(url)
-        if u.scheme in {"file", "about", "data"}:
-            return True
-        return any(u.netloc == d or u.netloc.endswith("." + d) for d in self.allowed_domains)
+        return domain_allowed(url, self.allowed_domains)
 
     def execute(self, a: Action) -> ExecResult:
+        r = self._execute(a)
+        if a.x is not None and a.y is not None and a.is_pointer:
+            self.cursor = (int(a.x2), int(a.y2)) if a.type == "drag" and a.x2 is not None else (int(a.x), int(a.y))
+        if self.allowed_domains:
+            try:
+                self._alive_active().wait_for_timeout(60)   # 让点击触发的导航 / 弹窗事件到达
+            except Exception:
+                pass
+            self._enforce()
+            if self._unreported:
+                msg = "; ".join(self._unreported)
+                self._unreported = []
+                return ExecResult(False, f"blocked_by_safety: off-allowlist navigation blocked: {msg}"[:400],
+                                  r.started, time.time())
+        return r
+
+    def _execute(self, a: Action) -> ExecResult:
         self._ensure()
         t0 = time.time()
         if not self.supports(a.type):

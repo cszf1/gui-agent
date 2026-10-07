@@ -136,7 +136,8 @@ class ScriptedPolicy:
     # ---------------------------------------------------------------- verifier 桩
     @staticmethod
     def verify(system: str, text: str, images=None) -> str:
-        if "Sub-goal:" in text:  # 收尾核验（没有 expect_text 时才会走到这里）
+        # 收尾核验（子目标 / 整任务）：脚本桩不能判断目标是否达成，一律 uncertain（v0.3：uncertain 不算完成）
+        if "Sub-goal:" in text or "Whole task:" in text:
             return json.dumps({"verdict": "uncertain", "evidence": "scripted verifier cannot judge goals without expect_text"})
         return json.dumps({"verdict": "success", "evidence": "scripted L2 stub (optimistic)"})
 

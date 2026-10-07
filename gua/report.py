@@ -7,7 +7,8 @@ from pathlib import Path
 
 COLORS = {"success": "#1a7f37", "in_progress": "#9a6700", "no_effect": "#bc4c00", "failed": "#cf222e",
           "blocked": "#8250df", "uncertain": "#6e7781", "off": "#6e7781", "rejected": "#cf222e", "done": "#1a7f37", "fail": "#cf222e",
-          "step_limit": "#bc4c00", "budget_limit": "#bc4c00", "time_limit": "#bc4c00"}
+          "step_limit": "#bc4c00", "budget_exhausted": "#bc4c00", "budget_limit": "#bc4c00", "time_limit": "#bc4c00",
+          "user_abort": "#8250df"}
 
 CSS = """body{font-family:-apple-system,Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2328;background:#f6f8fa}
 h1{font-size:20px} .card{background:#fff;border:1px solid #d0d7de;border-radius:8px;padding:12px 16px;margin:12px 0}

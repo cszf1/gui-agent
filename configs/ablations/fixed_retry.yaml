@@ -1,4 +1,6 @@
-# 基线 2：只用规则检测，失败就原样重试
+# 基线 2：只用规则检测（L0/L1，零验证模型调用），失败就原样重试（重试同样经过安全闸门；被拒绝的动作不重试）
+# v0.3：verification.llm=false 保证步骤级 / 收尾都不会调用 L2；反思器也关闭（它同样是一次模型调用）
 extends: ../default.yaml
-verification: {trigger: on_event, verify_goals: false}
+verification: {trigger: on_event, llm: false, verify_goals: false, final_check: false}
 recovery: {fixed_retry: true}
+reflection: {enabled: false}

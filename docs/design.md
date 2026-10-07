@@ -1,4 +1,8 @@
-# 设计说明（v0.2 跨平台版）
+# 设计说明（v0.2 跨平台版；v0.3 审查修复见 [review-fixes.md](review-fixes.md)）
+
+> v0.3 对本文描述的主循环有 4 处行为变化：①所有执行动作（含恢复动作）统一经过安全闸门，拒绝是终止性的；
+> ②任务收尾核验总是运行，只有明确 success 才算完成，uncertain 不算；③预算在模型调用边界硬性执行（`budget_exhausted`）；
+> ④各组件读取同一个 `CapabilityPolicy`（`gua/policy.py`）。坐标换算改为 `ImageTransform` 变换链。
 
 > v0.1（win-gui-agent / `wga`）只支持 Windows。v0.2 把同一套验证-恢复核心推广到 6 个后端；调研与取舍见 [research.md](research.md)。
 

@@ -3,7 +3,17 @@
   规划 → [每步] 观察 → 决策(Actor) → 坐标换算 → 定位(Grounder) → 安全闸门 → 执行
        → 等待稳定 → 验证(L0/L1/L2) → (恢复 + 反思) → 子目标收尾核验 → 里程碑 → … → 任务收尾核验
 
-预算与限制：全局步数、每子目标步数、重规划次数、模型调用数、token、墙钟时间，任一触顶即停止。
+预算与限制：全局步数、每子目标步数、重规划次数、模型调用数、token、成本、墙钟时间，任一触顶即停止。
+
+v0.3 审查修复（详见 docs/review-fixes.md）：
+1. 所有真正执行的动作（actor 动作、恢复 / 重试 / 撤销 / 滚动 / 切回窗口）都经过 `_execute_gated` → 安全闸门；
+   拒绝对该动作是终止性的（SafetyGuard 记住签名，fixed_retry 也不会重试）。
+2. 任务收尾核验默认总是运行（不再只在 >1 个子目标时）：重新规则核验每个子目标的 expect_text + 需要时整任务聚合 L2；
+   只有明确 SUCCESS 才返回 done；uncertain 默认先重规划一次，仍不确定则返回 "uncertain"（不算成功）。
+3. 预算在模型调用边界上硬性执行（BudgetExceeded 在请求发出前抛出），这里转换为终止状态 "budget_exhausted"。
+5. actor 输出解析 / 校验失败（ActionParseError 等）一律变成反馈交还模型，不会让运行崩溃。
+6. 各组件读取同一个 CapabilityPolicy。
+10. UserAbort（pyautogui fail-safe 等人工紧急停止）→ 终止状态 "user_abort"。
 """
 from __future__ import annotations
 
@@ -11,18 +21,22 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .actions import Action
+from .actions import Action, ActionParseError
 from .coords import to_pixel_action
 from .env.base import Env, ExecResult, Observation
+from .errors import UserAbort
 from .grounding import Grounder
-from .llm.base import Budget
+from .llm.base import Budget, BudgetExceeded
 from .logger import TrajectoryLogger
 from .memory import Memory, Milestone, StepRecord
 from .planner import Actor, Planner, Subgoal
+from .policy import CapabilityPolicy
 from .recovery import RecoveryPolicy, Strategy
 from .reflection import Reflector
 from .safety import SafetyGuard
 from .verify import Check, Verdict, Verifier
+
+TERMINAL_STATUSES = {"done", "fail", "uncertain", "step_limit", "budget_exhausted", "time_limit", "user_abort"}
 
 
 @dataclass
@@ -34,15 +48,19 @@ class AgentConfig:
     settle_interval: float = 0.4
     task_window: str = ""            # 任务窗口标题片段 / Android 包名 / Web 页面标题，用于焦点检查
     verify_goals: bool = True        # 子目标收尾核验
-    max_budget_calls: int = 200      # 模型调用硬上限（公平对比用）
+    final_check: bool = True         # 任务收尾核验（v0.3：默认总是运行，含单子目标任务；显式 False 才关闭）
+    final_l2: str = "when_needed"    # when_needed | always：所有子目标都被规则证实时是否还要调用聚合 L2
+    on_uncertain: str = "replan"     # 收尾核验 uncertain：replan（重规划一次后报告 uncertain）| fail（直接报告 uncertain）
+    max_budget_calls: int = 200      # 模型调用硬上限（公平对比用；在调用边界强制执行）
     max_tokens: Optional[int] = None
+    max_cost_usd: Optional[float] = None
     max_seconds: Optional[float] = None
     platform: str = "mock"
 
 
 @dataclass
 class RunResult:
-    status: str                      # done | fail | step_limit | budget_limit | time_limit
+    status: str                      # done | fail | uncertain | step_limit | budget_exhausted | time_limit | user_abort
     claimed_done: bool
     steps: int
     replans: int
@@ -52,6 +70,7 @@ class RunResult:
     message: str = ""
     answer: str = ""
     safety_events: list[dict] = field(default_factory=list)
+    policy: dict = field(default_factory=dict)
 
 
 StepHook = Callable[[int, "GUIAgent"], None]
@@ -61,13 +80,22 @@ class GUIAgent:
     def __init__(self, env: Env, planner: Planner, actor: Actor, grounder: Grounder, verifier: Verifier,
                  recovery: RecoveryPolicy, cfg: AgentConfig, budget: Budget,
                  logger: Optional[TrajectoryLogger] = None, memory: Optional[Memory] = None,
-                 reflector: Optional[Reflector] = None, guard: Optional[SafetyGuard] = None):
+                 reflector: Optional[Reflector] = None, guard: Optional[SafetyGuard] = None,
+                 policy: Optional[CapabilityPolicy] = None):
         self.env, self.planner, self.actor, self.grounder = env, planner, actor, grounder
         self.verifier, self.recovery, self.cfg, self.budget = verifier, recovery, cfg, budget
         self.log = logger
         self.mem = memory or Memory()
         self.reflector = reflector or Reflector(None, enabled=False)
         self.guard = guard or SafetyGuard(mode="deny")
+        self.policy = policy or CapabilityPolicy(
+            a11y_grounding=grounder.use_a11y, a11y_rules=verifier.use_a11y,
+            a11y_in_prompts=getattr(getattr(actor, "policy", None), "a11y_in_prompts", True),
+            step_trigger=verifier.trigger, llm_step_verify=getattr(verifier, "llm_step", True),
+            llm_goal_verify=getattr(verifier, "llm_goal", True), llm_reflection=self.reflector.enabled,
+            goal_check=cfg.verify_goals, final_check=cfg.final_check, final_l2=cfg.final_l2,
+            on_uncertain=cfg.on_uncertain,
+            recovery="none" if not recovery.enabled else "fixed_retry" if recovery.fixed_retry else "classified")
         self.step_no = 0
         self.before_step: list[StepHook] = []
         self._t0 = time.time()
@@ -76,6 +104,8 @@ class GUIAgent:
             self.budget.max_calls = cfg.max_budget_calls
         if self.budget.max_tokens is None:
             self.budget.max_tokens = cfg.max_tokens
+        if self.budget.max_cost_usd is None:
+            self.budget.max_cost_usd = cfg.max_cost_usd
 
     # ------------------------------------------------------------------ helpers
     def _settle(self) -> tuple[Observation, bool]:
@@ -86,7 +116,7 @@ class GUIAgent:
             return "step_limit", "global step limit"
         b = self.budget.exhausted()
         if b:
-            return "budget_limit", b
+            return "budget_exhausted", b
         if self.cfg.max_seconds and time.time() - self._t0 > self.cfg.max_seconds:
             return "time_limit", f"wall-clock limit {self.cfg.max_seconds}s"
         return None
@@ -94,7 +124,9 @@ class GUIAgent:
     def _resolve(self, a: Action, obs: Observation, zoom_around=None) -> tuple[Action, str]:
         """坐标换算 + 把 target 描述 / element_id 变成截图像素坐标。"""
         w, h = obs.screenshot.size
-        to_pixel_action(a, w, h, getattr(self.grounder.mapper, "max_pixels", 1280 * 28 * 28))
+        # 动作自带的 transform（actor 回复里“实际发送尺寸”）优先，见 coords.ImageTransform
+        to_pixel_action(a, w, h, getattr(self.actor, "max_pixels", getattr(self.grounder.mapper, "max_pixels",
+                                                                           1280 * 28 * 28)))
         if a.is_pointer and (a.x is None or a.element_id is not None):
             g = self.grounder.ground(obs, a.target or "", a.element_id, zoom_around)
             if g is None:
@@ -112,45 +144,106 @@ class GUIAgent:
                 a.x, a.y = g.x, g.y
         return a, "direct" if a.is_pointer else "-"
 
+    # ------------------------------------------------------------------ 统一执行出口（安全闸门）
+    def _execute_gated(self, a: Action, obs: Optional[Observation], origin: str = "actor") -> ExecResult:
+        """所有真正发往环境的动作都从这里走：先过安全闸门，拒绝即返回 blocked_by_safety（终止性，不重试）。"""
+        approved, why = self.guard.gate(a, obs)
+        if (why or not approved) and self.log:
+            self.log.step(kind="safety", step=self.step_no, origin=origin, action=_redact(a, obs),
+                          reason=why, approved=approved)
+        if not approved:
+            t = time.time()
+            return ExecResult(False, f"blocked_by_safety: {why}", t, t)
+        res = self.env.execute(a)
+        if not res.ok and "blocked_by_safety" in (res.error or ""):
+            self.guard.remember_denial(a, obs, res.error)      # 环境层（例如 Web 白名单）拦截也是终止性的
+        return res
+
+    def _run_recovery_actions(self, actions: list[Action], obs: Observation, origin: str) -> list[str]:
+        """执行恢复动作（每个都过安全闸门）；返回被拦下的动作说明。被拦后不再继续执行后续恢复动作。"""
+        blocked = []
+        for ra in actions:
+            r = self._execute_gated(ra, obs, origin)
+            if not r.ok and "blocked_by_safety" in r.error:
+                blocked.append(f"{ra.short()} ({r.error})")
+                break
+        if actions:
+            self._settle()
+        return blocked
+
     # ------------------------------------------------------------------ main
     def run(self, task: str) -> RunResult:
         self._t0 = time.time()
+        self._replans = 0
+        try:
+            return self._run(task)
+        except BudgetExceeded as e:
+            if self.log:
+                self.log.step(kind="budget_exhausted", step=self.step_no, reason=e.reason, resource=e.resource)
+            return self._finish("budget_exhausted", False, self._replans, e.reason)
+        except UserAbort as e:
+            if self.log:
+                self.log.step(kind="user_abort", step=self.step_no, reason=str(e))
+            return self._finish("user_abort", False, self._replans, f"user abort: {e}")
+
+    def _run(self, task: str) -> RunResult:
+        self._replans = 0
         obs = self.env.observe()
         subgoals = self.planner.plan(task, obs)
         if self.log:
-            self.log.meta(task_text=task, platform=self.cfg.platform, task_window=self.cfg.task_window)
+            self.log.meta(task_text=task, platform=self.cfg.platform, task_window=self.cfg.task_window,
+                          policy=self.policy.to_dict())
             self.log.step(kind="plan", subgoals=subgoals)
-        replans, idx = 0, 0
+        idx, final_retries = 0, 0
 
-        while idx < len(subgoals):
-            sg = subgoals[idx]
-            self.recovery.reset_subgoal()
-            outcome, notes = self._run_subgoal(task, sg, len(subgoals))
-            if outcome == "done":
-                idx += 1
-                continue
-            if outcome in {"step_limit", "budget_limit", "time_limit"}:
-                return self._finish(outcome, False, replans, notes)
-            if replans >= self.cfg.max_replans or self._limit():
-                return self._finish("fail", False, replans, notes)
-            replans += 1
+        while True:
+            while idx < len(subgoals):
+                sg = subgoals[idx]
+                self.recovery.reset_subgoal()
+                outcome, notes = self._run_subgoal(task, sg, len(subgoals))
+                if outcome == "done":
+                    idx += 1
+                    continue
+                if outcome in {"step_limit", "budget_exhausted", "time_limit"}:
+                    return self._finish(outcome, False, self._replans, notes)
+                lim = self._limit()
+                if lim:
+                    return self._finish(lim[0], False, self._replans, f"{notes}; {lim[1]}")
+                if self._replans >= self.cfg.max_replans:
+                    return self._finish("fail", False, self._replans, notes)
+                self._replans += 1
+                obs = self.env.observe()
+                self.mem.invalidate_after(sg.id)
+                rest = self.planner.replan(task, obs, sg, notes, self.mem.milestones_text(), sg.id, self.mem.notes_text())
+                subgoals = subgoals[:idx] + rest
+                if self.log:
+                    self.log.step(kind="replan", failed=sg, notes=notes, subgoals=rest)
+
+            # 任务收尾核验：只看当前屏幕；聚合整个任务 + 全部子目标；明确 SUCCESS 才算完成
+            if not self.cfg.final_check:
+                return self._finish("done", True, self._replans, "final check disabled")
+            final = self.verifier.check_final(self._settle()[0], task, subgoals, self.cfg.final_l2)
+            if self.log:
+                self.log.step(kind="final_check", verdict=final.verdict, evidence=final.evidence, level=final.level,
+                              signals=final.signals)
+            if final.verdict == Verdict.SUCCESS:
+                return self._finish("done", True, self._replans, "")
+            status = "fail" if final.verdict == Verdict.FAILED else "uncertain"
+            note = f"final check {final.verdict.value}: {final.evidence}"
+            can_retry = (final_retries < 1 and self._replans < self.cfg.max_replans and self._limit() is None
+                         and not (status == "uncertain" and self.cfg.on_uncertain == "fail"))
+            if not can_retry:
+                return self._finish(status, False, self._replans, note)
+            final_retries += 1
+            self._replans += 1
             obs = self.env.observe()
-            self.mem.invalidate_after(sg.id)
-            rest = self.planner.replan(task, obs, sg, notes, self.mem.milestones_text(), sg.id, self.mem.notes_text())
-            subgoals = subgoals[:idx] + rest
+            failed = Subgoal(0, f"final check of the whole task: {task}", "all task requirements hold on screen")
+            rest = self.planner.replan(task, obs, failed, note, self.mem.milestones_text(),
+                                       max((sg.id for sg in subgoals), default=0) + 1, self.mem.notes_text())
+            idx = len(subgoals)
+            subgoals = subgoals + rest
             if self.log:
-                self.log.step(kind="replan", failed=sg, notes=notes, subgoals=rest)
-
-        # 任务收尾核验：只看当前屏幕，避免“历史上保存过”代替“现在已保存”
-        if self.cfg.verify_goals and len(subgoals) > 1:
-            last = subgoals[-1]
-            final = self.verifier.check_goal(self._settle()[0], task, "all task requirements satisfied",
-                                             last.expect_text or None)
-            if self.log:
-                self.log.step(kind="final_check", verdict=final.verdict, evidence=final.evidence, level=final.level)
-            if final.verdict == Verdict.FAILED:
-                return self._finish("fail", False, replans, f"final check failed: {final.evidence}")
-        return self._finish("done", True, replans, "")
+                self.log.step(kind="replan", failed=failed, notes=note, subgoals=rest)
 
     # ------------------------------------------------------------------
     def _run_subgoal(self, task: str, sg: Subgoal, total: int) -> tuple[str, str]:
@@ -171,9 +264,15 @@ class GUIAgent:
                 action, thought = self.actor.next_action(task, sg, total, before, self.mem.history_text(sg.id),
                                                          self.mem.milestones_text(), feedback,
                                                          notes=self.mem.notes_text())
-            except ValueError as e:  # 模型输出无法解析
-                feedback = f"Your last reply could not be parsed ({e}). Reply with ONE valid JSON action."
-                self.mem.add_step(StepRecord(self.step_no, sg.id, "(unparseable)", "failed", str(e)[:120]))
+                if not isinstance(action, Action):
+                    raise ActionParseError("not_object", f"actor returned {type(action).__name__}, not an Action")
+                action.validate()
+            except (ActionParseError, ValueError, TypeError, KeyError, IndexError) as e:   # 不可解析 / 不合法
+                err = e if isinstance(e, ActionParseError) else ActionParseError("invalid", f"{type(e).__name__}: {e}")
+                feedback = err.feedback()
+                self.mem.add_step(StepRecord(self.step_no, sg.id, "(invalid action)", "failed", str(err)[:160]))
+                if self.log:
+                    self.log.step(kind="parse_error", step=self.step_no, subgoal=sg.id, error=err.to_dict())
                 continue
 
             # ---- 终止 / 交互类动作
@@ -210,15 +309,11 @@ class GUIAgent:
                 self.mem.add_step(StepRecord(self.step_no, sg.id, action.short(), "grounding_failed", ""))
                 continue
 
-            # ---- 安全闸门
-            approved, why = self.guard.gate(action, before)
-            if why and self.log:
-                self.log.step(kind="safety", step=self.step_no, action=action.to_dict(), reason=why, approved=approved)
-            if not approved:
-                res = ExecResult(False, f"blocked_by_safety: {why}", time.time(), time.time())
+            # ---- 安全闸门 + 执行（统一出口）
+            res = self._execute_gated(action, before, "actor")
+            if not res.ok and res.error.startswith("blocked_by_safety") and "off-allowlist" not in res.error:
                 after, stable = before, True
             else:
-                res = self.env.execute(action)
                 after, stable = self._settle()
             check = self.verifier.check_step(before, after, action, res, stable, expected=sg.expected,
                                              task_window=self.cfg.task_window, expect_text=sg.expect_text or None)
@@ -232,10 +327,7 @@ class GUIAgent:
                 plan = self.recovery.decide(check, action, self.cfg.task_window, last_failure)
                 rec.recovery = plan.strategy.value
                 last_failure = check.verdict.value
-                for ra in plan.actions:
-                    self.env.execute(ra)
-                if plan.actions:
-                    self._settle()
+                blocked = self._run_recovery_actions(plan.actions, after, f"recovery:{plan.strategy.value}")
                 if plan.strategy == Strategy.REGROUND_ZOOM and action.point is not None:
                     zoom_around = action.point
                 if plan.strategy in {Strategy.REPLAN, Strategy.GIVE_UP} and self.recovery.exhausted:
@@ -243,7 +335,12 @@ class GUIAgent:
                     self._log_step(rec, before, after, action, src, check, thought)
                     return "fail", f"{check.verdict.value}: {check.evidence}"
                 feedback = f"Last action => {check.verdict.value}: {check.evidence}. Recovery: {plan.note}."
-                if self.reflector.should_reflect(check.verdict.value) and not self.budget.exhausted():
+                if "blocked_by_safety" in (check.signals or {}).get("exec_error", ""):
+                    feedback += " That action was refused by the safety policy and will not be executed; do not retry it."
+                if blocked:
+                    feedback += f" Recovery action refused by safety policy: {'; '.join(blocked)}."
+                if self.policy.llm_reflection and self.reflector.should_reflect(check.verdict.value) \
+                        and not self.budget.exhausted():
                     note = self.reflector.reflect(task, sg.goal, self.mem.history_text(sg.id) + "\n" + rec.action,
                                                   f"{check.verdict.value}: {check.evidence}")
                     if note:
@@ -268,7 +365,7 @@ class GUIAgent:
                       "pre", {"focus_lost": True, "win_before": before.active_window})
         plan = self.recovery.decide(check, Action("wait"), tw, None)
         for ra in plan.actions:
-            self.env.execute(ra)
+            self._execute_gated(ra, before, "precheck")
         after, _ = self._settle()
         rec = StepRecord(self.step_no, sg.id, "(pre-action focus check)", check.verdict.value, check.evidence,
                          plan.strategy.value)
@@ -287,7 +384,7 @@ class GUIAgent:
         if not self.log:
             return
         self.log.step(kind="step", step=rec.step, subgoal=rec.subgoal_id, thought=thought,
-                      action=action.to_dict(), grounding=src, verdict=check.verdict, level=check.level,
+                      action=_redact(action, before), grounding=src, verdict=check.verdict, level=check.level,
                       evidence=check.evidence, signals=check.signals, recovery=rec.recovery,
                       window=after.active_window, url=after.url,
                       before=self.log.shot(rec.step, "before", before.screenshot),
@@ -295,8 +392,20 @@ class GUIAgent:
                       calls_so_far=self.budget.calls)
 
     def _finish(self, status: str, claimed: bool, replans: int, msg: str) -> RunResult:
+        assert status in TERMINAL_STATUSES, status
+        claimed = claimed and status == "done"          # 只有 done 才算“宣称完成”
         r = RunResult(status, claimed, self.step_no, replans, list(self.recovery.history), self.budget,
-                      time.time() - self._t0, msg, self._answer, list(self.guard.log))
+                      time.time() - self._t0, msg, self._answer, list(self.guard.log), self.policy.to_dict())
         if self.log:
             self.log.meta(result=r)
         return r
+
+
+def _redact(a: Action, obs: Optional[Observation]) -> dict:
+    """日志里不写入往密码框输入的明文。"""
+    d = a.to_dict()
+    if a.type == "type" and obs is not None:
+        f = next((e for e in obs.elements if e.focused), None)
+        if f is not None and getattr(f, "is_password", False):
+            d["text"] = "***"
+    return d

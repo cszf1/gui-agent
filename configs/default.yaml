@@ -15,6 +15,12 @@ env:
     browser: chromium
     allowed_domains: []   # 非空时 navigate 只允许这些域名（file:// 本地页面始终允许）
 
+# v0.3：信息/能力策略（gua/policy.py）。所有组件都读同一个由配置推导出的 CapabilityPolicy
+observation:
+  use_a11y: true          # 总开关：false = 纯视觉（定位 / L1 规则 / 所有提示词都不出现无障碍树与 DOM 文本）
+  a11y_in_prompts: true   # 模型提示词里是否放元素列表与可见文本
+  window_metadata: true   # 窗口标题 / URL（窗口管理器元数据）是否给模型
+
 models:
   # 规划/决策/验证：任意 OpenAI 兼容多模态模型；provider: anthropic 走 Claude Messages API
   planner:
@@ -23,6 +29,8 @@ models:
     base_url: null
     api_key_env: OPENAI_API_KEY
     image_max_side: 1600
+    # price: [2.5, 10.0]  # 可选：美元/百万 token [输入, 输出]，用于 agent.max_cost_usd 成本上限
+    # reasoning: null     # GPT-5 / o 系列按模型名自动检测（max_completion_tokens、不发 temperature）；未用真实 API 验证
   actor: null             # null = 与 planner 共用
   # 定位：建议用专门的 grounding 模型（UI-TARS-1.5-7B / OpenCUA-7B / Qwen2.5-VL-7B，vLLM 部署）
   grounder:
@@ -38,6 +46,7 @@ actor:
   kind: json              # json（planner–grounder 分离，默认）| uitars（端到端）| claude_computer_use（端到端）
   coord_space: null       # null = 只给 element_id/target，交给 grounder；或 norm1000|norm1|resized|pixel 让 actor 直接给坐标
   max_elements_in_prompt: 80
+  # max_pixels: 1003520   # actor 直接给 resized 坐标时模型侧 smart_resize 的 max_pixels（缺省同 grounding.max_pixels）
 
 grounding:
   coord: resized          # grounder 输出坐标约定：norm1000 | resized | norm1 | pixel
@@ -48,7 +57,11 @@ grounding:
 
 verification:
   trigger: on_event       # none | every_step | on_event
-  verify_goals: true
+  llm: true               # 是否允许 L2 模型验证（步骤级 / 子目标 / 任务收尾）；false = 纯规则
+  verify_goals: true      # 子目标收尾核验（actor 说 done 时）
+  final_check: true       # 任务收尾核验：每个子目标的 expect_text 重新规则核验 + 需要时整任务聚合 L2（单子目标也跑）
+  final_l2: when_needed   # when_needed：全部子目标都被规则证实时不再调 L2 | always
+  on_uncertain: replan    # 收尾核验 uncertain：replan（重规划一次，仍不确定则报告 uncertain）| fail
   use_a11y: true          # L1 规则是否使用无障碍树证据
 
 recovery:
@@ -64,7 +77,8 @@ reflection:
 safety:
   enabled: true
   mode: confirm           # confirm（终端询问）| deny | allow（仅沙箱/测试）
-  allowed_domains: []
+  allowed_domains: []     # 非空时：navigate 检查 + Web 后端浏览器层拦截（点击 / 重定向 / 新标签页都拦）
+  allowed_apps: []        # 非空时 open_app 只允许这些应用名 / 包名
   extra_risky_words: []
 
 agent:
@@ -73,6 +87,7 @@ agent:
   max_replans: 2
   settle_timeout: 5.0
   settle_interval: 0.4
-  max_budget_calls: 200   # 对比实验时所有配置使用同一预算
+  max_budget_calls: 200   # 对比实验时所有配置使用同一预算；在模型调用边界硬性执行（触顶即 budget_exhausted）
   max_tokens: null
+  max_cost_usd: null      # 需要在 models.*.price 配置价格
   max_seconds: 900

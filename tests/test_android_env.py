@@ -47,7 +47,8 @@ def test_commands():
     assert env.command_for(Action("long_press", x=5, y=6, seconds=1)) == "input swipe 5 6 5 6 1000"
     assert env.command_for(Action("back")) == "input keyevent 4"
     assert env.command_for(Action("home")) == "input keyevent 3"
-    assert env.command_for(Action("type", text="a b&c", submit=True)) == "input text a%sb\\&c && input keyevent 66"
+    # v0.3：参数 shlex.quote（不再手写反斜杠转义），多条命令逐条发送（这里仅为显示用 && 连接）
+    assert env.command_for(Action("type", text="a b&c", submit=True)) == "input text 'a%sb&c' && input keyevent 66"
     assert env.command_for(Action("open_app", app="com.android.settings")).startswith("monkey -p com.android.settings")
     assert env.command_for(Action("open_app", app="com.x/.Main")) == "am start -n com.x/.Main"
     # 内容向下滚 = 手指向上滑

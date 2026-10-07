@@ -1,5 +1,5 @@
-# 基线 1：原始执行循环（不验证、不恢复、不做收尾核验、不反思）
+# 基线 1：原始执行循环（不验证、不恢复、不做子目标/任务收尾核验、不反思）。安全闸门仍然生效。
 extends: ../default.yaml
-verification: {trigger: none, verify_goals: false}
+verification: {trigger: none, verify_goals: false, final_check: false}
 recovery: {enabled: false}
 reflection: {enabled: false}

@@ -10,6 +10,10 @@
   DISMISS  desktop/web: Esc                  android: back
   SCROLL   按目标点与屏幕中心的距离 / env.scroll_unit_px 计算滚动方向与格数（目标在屏幕外时）
   UNDO     desktop/web: ctrl+z (macOS: cmd+z)  android: 不支持
+
+v0.3（审查条目 1）：安全拒绝是终止性的——被安全闸门 / 白名单拦下的动作（exec_error 含 blocked_by_safety）
+在任何模式下（包括 fixed_retry 基线）都不会被原样重试，只交回规划器换路径。恢复计划里的每个动作
+（重试 / 撤销 / 滚动 / Esc / 切回窗口）由 GUIAgent 统一送进安全闸门后才执行。
 """
 from __future__ import annotations
 
@@ -93,6 +97,11 @@ class RecoveryPolicy:
                last_failure: Optional[str] = None) -> RecoveryPlan:
         if not self.enabled:
             return RecoveryPlan(Strategy.REPLAN, note="recovery disabled")
+        err0 = (check.signals or {}).get("exec_error", "") or ""
+        if "blocked_by_safety" in err0:      # 拒绝是终止性的：绝不重试同一动作（fixed_retry 也一样）
+            self.history.append(f"{check.verdict.value}->{Strategy.REPLAN.value}")
+            return RecoveryPlan(Strategy.REPLAN, note="action refused by safety policy; it will not be retried, "
+                                                      "choose another path")
         if check.verdict == Verdict.IN_PROGRESS:
             if self._waits < self.max_waits:
                 self._waits += 1

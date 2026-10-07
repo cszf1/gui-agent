@@ -1,4 +1,8 @@
-"""模型输出解析：JSON 动作、坐标点、UI-TARS 原生动作串。"""
+"""模型输出解析：JSON 动作、坐标点、UI-TARS 原生动作串。
+
+v0.3：所有失败统一抛 ActionParseError（ValueError 子类，带 code / field / feedback()），
+不再出现 {"action": null} → TypeError 这类绕过反馈/恢复的崩溃。
+"""
 from __future__ import annotations
 
 import ast
@@ -6,7 +10,7 @@ import json
 import re
 from typing import Any, Optional
 
-from .actions import Action, parse_action
+from .actions import Action, ActionParseError, parse_action
 
 _JSON_RE = re.compile(r"\{.*\}", re.S)
 
@@ -27,8 +31,14 @@ def extract_json(text: str) -> dict[str, Any]:
         pass
     m = _JSON_RE.search(text)
     if not m:
-        raise ValueError(f"no JSON object in model output: {text[:200]!r}")
-    return json.loads(m.group(0))
+        raise ActionParseError("no_json", f"no JSON object in model output: {text[:200]!r}", None, text)
+    try:
+        v = json.loads(m.group(0))
+    except json.JSONDecodeError as e:
+        raise ActionParseError("no_json", f"malformed JSON ({e.msg})", None, text) from None
+    if not isinstance(v, dict):
+        raise ActionParseError("not_object", "expected a JSON object", None, text)
+    return v
 
 
 _POINT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)")
@@ -100,7 +110,8 @@ def parse_uitars(text: str, coord_space: str = "resized") -> tuple[Action, str]:
         thought = tm.group(1).strip()
     m = _UITARS_CALL.search(text or "")
     if not m:
-        raise ValueError(f"no UI-TARS action in: {text[:160]!r}")
+        raise ActionParseError("no_json", f"no JSON action and no UI-TARS action in: {(text or '')[:160]!r}",
+                               None, text)
     name, kw = m.group(1).lower(), _kwargs(m.group(2))
     p1 = _pt(kw.get("start_box") or kw.get("point") or kw.get("start_point"))
     p2 = _pt(kw.get("end_box") or kw.get("end_point"))
@@ -116,7 +127,9 @@ def parse_uitars(text: str, coord_space: str = "resized") -> tuple[Action, str]:
     elif name == "long_press":
         a = Action("long_press", **base)
     elif name in {"drag", "select"}:
-        a = Action("drag", x2=p2[0] if p2 else None, y2=p2[1] if p2 else None, **base)
+        if p2 is None:
+            raise ActionParseError("missing_field", "drag needs end_box", "end_box", text)
+        a = Action("drag", x2=p2[0], y2=p2[1], **base)
     elif name == "hotkey":
         a = Action("hotkey", keys=str(kw.get("key", "")).split(), reason=thought)
     elif name == "type":
@@ -138,21 +151,37 @@ def parse_uitars(text: str, coord_space: str = "resized") -> tuple[Action, str]:
     elif name == "call_user":
         a = Action("ask_user", text=thought or "need help", reason=thought)
     else:
-        raise ValueError(f"unsupported UI-TARS action {name}")
-    return a, thought
+        raise ActionParseError("unknown_action", f"unsupported UI-TARS action {name}", "action", text)
+    return a.validate(), thought
 
 
 def parse_model_action(text: str, default_coord_space: str = "pixel") -> tuple[Action, str]:
-    """通用入口：先试 JSON（{"thought":..,"action":{..}}），再试 UI-TARS 格式。"""
+    """通用入口：JSON（{"thought":..,"action":{..}}）优先；没有 JSON 对象时再试 UI-TARS 格式。
+
+    任何失败都抛 ActionParseError（主循环把 feedback() 交还模型）。
+    """
+    if not isinstance(text, str):
+        raise ActionParseError("bad_type", f"model reply must be text, got {type(text).__name__}")
+    stripped = text.strip()
+    looks_json = stripped.startswith(("{", "[", "```"))
+    if not looks_json and _UITARS_CALL.search(text):
+        return parse_uitars(text, default_coord_space if default_coord_space != "pixel" else "resized")
     try:
         obj = extract_json(text)
-        act = obj.get("action", obj)
-        if isinstance(act, str):
-            act = {"type": act, **{k: v for k, v in obj.items() if k not in {"action", "thought"}}}
-        thought = str(obj.get("thought", ""))
-        a = parse_action(act, default_coord_space)
-        if not a.reason:
-            a.reason = thought
-        return a, thought
-    except (ValueError, json.JSONDecodeError):
+    except ActionParseError:
+        if stripped.startswith("[") or not _UITARS_CALL.search(text):
+            raise
         return parse_uitars(text, default_coord_space if default_coord_space != "pixel" else "resized")
+    if "items" in obj and len(obj) == 1:
+        raise ActionParseError("not_object", "expected one JSON object with an \"action\", got a list", None, text)
+    act = obj.get("action", obj) if "action" in obj else obj
+    if isinstance(act, str):
+        act = {"type": act, **{k: v for k, v in obj.items() if k not in {"action", "thought"}}}
+    if act is None:
+        raise ActionParseError("missing_type", "\"action\" is null", "action", text)
+    thought = obj.get("thought", "")
+    thought = thought if isinstance(thought, str) else json.dumps(thought, ensure_ascii=False)[:500]
+    a = parse_action(act, default_coord_space)
+    if not a.reason:
+        a.reason = thought
+    return a, thought

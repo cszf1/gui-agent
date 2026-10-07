@@ -8,6 +8,9 @@
 - Web：DOM 快照（env/web.py 注入 JS 得到的扁平列表）
 
 统一流程：raw dict 列表 → finalize()：裁剪到屏幕、标记 offscreen、去重、过滤、编号。
+
+v0.3：raw dict 新增 is_password（审查条目 11），finalize 带入 UIElement.is_password；
+Windows 的 UIA 控件 → raw 的转换抽成纯函数 uia_raw()，可用假控件离线测试。
 """
 from __future__ import annotations
 
@@ -57,6 +60,46 @@ ARIA_ROLE = {
     "searchbox": "textbox", "option": "listitem", "menuitemcheckbox": "menuitem", "menuitemradio": "menuitem",
     "alertdialog": "dialog", "img": "image", "gridcell": "cell", "summary": "button", "label": "text",
 }
+
+
+# ---------------------------------------------------------------- Windows UIA
+UIA_SKIP_ROLES = {"group", "other", "window", "list", "menu", "scrollbar"}
+
+
+def uia_raw(ctrl: Any, offset: tuple[int, int] = (0, 0)) -> Optional[dict[str, Any]]:
+    """uiautomation.Control → raw dict（None = 跳过）。IsPassword 对应 UIA IsPasswordProperty。"""
+    native = str(ctrl.ControlTypeName).replace("Control", "")
+    role = UIA_ROLE.get(native, "other")
+    if role in UIA_SKIP_ROLES:
+        return None
+    r = ctrl.BoundingRectangle
+    if r.width() <= 0 or r.height() <= 0 or ctrl.IsOffscreen:
+        return None
+    ox, oy = offset
+    is_pw = False
+    try:
+        is_pw = bool(getattr(ctrl, "IsPassword", False))
+    except Exception:
+        pass
+    val = None
+    if not is_pw:                     # 密码框的值不读取、不进入日志/提示词
+        try:
+            vp = ctrl.GetValuePattern()
+            val = vp.Value[:80] if vp else None
+        except Exception:
+            pass
+    checked = None
+    if role in {"checkbox", "radio"}:
+        try:
+            checked = ctrl.GetTogglePattern().ToggleState == 1
+        except Exception:
+            pass
+    aid = getattr(ctrl, "AutomationId", "") or ""
+    return {"name": ctrl.Name or "", "role": role, "native_role": native,
+            "rect": (r.left - ox, r.top - oy, r.right - ox, r.bottom - oy),
+            "enabled": bool(ctrl.IsEnabled), "focused": bool(ctrl.HasKeyboardFocus),
+            "value": val, "checked": checked, "is_password": is_pw,
+            "attrs": {"automation_id": aid} if aid else {}}
 
 
 def android_role(cls: str, clickable: bool) -> str:
@@ -127,6 +170,7 @@ def finalize(raws: Iterable[dict[str, Any]], screen: tuple[int, int], max_elemen
             id=len(out), name=name, role=role, rect=(l, t, rr, b), enabled=bool(r.get("enabled", True)),
             focused=bool(r.get("focused", False)), value=value, checked=r.get("checked"), offscreen=off,
             native_role=str(r.get("native_role", "")), attrs=dict(r.get("attrs") or {}),
+            is_password=bool(r.get("is_password")) or (r.get("attrs") or {}).get("password") == "true",
         ))
         if len(out) >= max_elements:
             break
@@ -181,6 +225,7 @@ def android_raws(xml: str) -> list[dict[str, Any]]:
             "enabled": a.get("enabled", "true") == "true", "focused": a.get("focused") == "true",
             "value": text if is_edit else None,
             "checked": (a.get("checked") == "true") if a.get("checkable") == "true" else None,
+            "is_password": a.get("password") == "true",
             "attrs": {k: v for k, v in (("resource-id", rid), ("package", a.get("package", "")),
                                         ("scrollable", a.get("scrollable", "")),
                                         ("password", a.get("password", ""))) if v and v != "false"},
@@ -213,8 +258,9 @@ def atspi_raws(node: dict[str, Any], scale: float = 1.0, depth: int = 0, max_dep
             "rect": (x * scale, y * scale, (x + w) * scale, (y + h) * scale),
             "enabled": ("enabled" in states or "sensitive" in states) if (states and interactive) else True,
             "focused": "focused" in states,
-            "value": node.get("text") if role == "textbox" else node.get("value"),
+            "value": None if native == "password text" else (node.get("text") if role == "textbox" else node.get("value")),
             "checked": ("checked" in states) if role in {"checkbox", "radio", "switch"} else None,
+            "is_password": native == "password text",
             "attrs": {"password": "true"} if native == "password text" else {},
         })
     for c in node.get("children", []) or []:
@@ -237,7 +283,9 @@ def ax_raws(node: dict[str, Any], scale: float = 1.0, depth: int = 0, max_depth:
     pos, size = node.get("AXPosition"), node.get("AXSize")
     if pos and size:
         native = str(node.get("AXRole", ""))
-        role = ax_role(native, str(node.get("AXSubrole", "") or ""))
+        subrole = str(node.get("AXSubrole", "") or "")
+        role = ax_role(native, subrole)
+        secure = native == "AXSecureTextField" or subrole == "AXSecureTextField"
         val = node.get("AXValue")
         name = node.get("AXTitle") or node.get("AXDescription") or node.get("AXHelp") or \
             (val if role == "text" and isinstance(val, str) else "") or ""
@@ -249,7 +297,8 @@ def ax_raws(node: dict[str, Any], scale: float = 1.0, depth: int = 0, max_depth:
             "rect": (pos[0] * scale, pos[1] * scale, (pos[0] + size[0]) * scale, (pos[1] + size[1]) * scale),
             "enabled": node.get("AXEnabled", True) is not False, "focused": bool(node.get("AXFocused")),
             "value": val if role in {"textbox", "combobox", "slider"} else None, "checked": checked,
-            "attrs": {"password": "true"} if native == "AXSecureTextField" else {},
+            "is_password": secure,
+            "attrs": {"password": "true"} if secure else {},
         })
     for c in node.get("children", []) or []:
         out.extend(ax_raws(c, scale, depth + 1, max_depth))
@@ -269,7 +318,9 @@ def web_raws(items: list[dict[str, Any]]) -> list[dict]:
         out.append({
             "name": it.get("name", ""), "role": role, "native_role": it.get("role") or it.get("tag", ""),
             "rect": it["rect"], "enabled": not it.get("disabled"), "focused": bool(it.get("focused")),
-            "value": it.get("value"), "checked": it.get("checked"),
+            "value": None if str(it.get("type") or "").lower() == "password" else it.get("value"),
+            "checked": it.get("checked"),
+            "is_password": str(it.get("type") or "").lower() == "password",
             "attrs": {k: v for k, v in (("gid", it.get("gid")), ("type", it.get("type")),
                                         ("href", it.get("href"))) if v},
         })

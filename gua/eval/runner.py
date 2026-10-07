@@ -19,6 +19,8 @@
 - false_done_rate     = agent 宣称完成但判分失败 / agent 宣称完成数   ← 方向 A 最关心
 - recovery_rate       = 有干扰且判分通过 / 有干扰的运行数
 - 平均步数、模型调用数、token、耗时
+- v0.3：budget_exhausted_runs（预算硬上限触顶，绝不计为成功）、uncertain_runs（收尾核验不确定）、
+  user_abort（人工紧急停止，记录后停止整个任务集）
 """
 from __future__ import annotations
 
@@ -136,6 +138,9 @@ def run_task(cfg: dict, task: dict, env, runs_root: str = "runs", rep: int = 0, 
         "recoveries": res.recoveries if res else [],
         "calls": res.budget.calls if res else 0,
         "tokens": (res.budget.prompt_tokens + res.budget.completion_tokens) if res else 0,
+        "cost_usd": round(res.budget.cost_usd, 6) if res else 0.0,
+        "budget_exhausted": bool(res and res.status == "budget_exhausted"),
+        "budget_refused_calls": res.budget.refused if res else 0,
         "seconds": round(res.seconds, 1) if res else 0, "disturbed": bool(dist and dist.fired_at),
         "error": err, "run_dir": str(log.dir), "policy": policy,
     }
@@ -168,6 +173,12 @@ def run_suite(cfg: dict, tasks: list[dict], runs_root: str = "runs", repeats: in
                 if not quiet:
                     print(json.dumps({k: row[k] for k in ("task", "rep", "passed", "status", "steps", "calls",
                                                           "recoveries")}, ensure_ascii=False))
+                if row["status"] == "user_abort":
+                    break
+            if rows and rows[-1]["status"] == "user_abort":
+                if not quiet:
+                    print("user abort (fail-safe): stopping the suite")
+                break
     finally:
         for e in envs.values():
             try:
@@ -202,6 +213,9 @@ def summarize(rows: list[dict]) -> dict:
         "claimed_done": len(claimed),
         "recovery_rate": round(sum(r["passed"] for r in disturbed) / len(disturbed), 3) if disturbed else None,
         "disturbed_runs": len(disturbed),
+        "budget_exhausted_runs": sum(1 for r in rows if r.get("budget_exhausted") or r["status"] == "budget_exhausted"),
+        "uncertain_runs": sum(1 for r in rows if r["status"] == "uncertain"),
+        "user_abort_runs": sum(1 for r in rows if r["status"] == "user_abort"),
         "avg_steps": mean("steps"), "avg_calls": mean("calls"), "avg_tokens": mean("tokens"),
         "avg_seconds": mean("seconds"),
     }

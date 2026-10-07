@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import subprocess
 import sys
 import time
@@ -19,9 +20,15 @@ import time
 from PIL import Image
 
 from ..actions import Action
-from .a11y import UIA_ROLE, finalize
+from .a11y import finalize, uia_raw
 from .base import Env, ExecResult, Observation
+from .commands import InvalidAppName, validate_app_name, windows_open_app_argv
 from .desktop import PyAutoGUIInput, clipboard_type
+
+
+def _startfile(path: str) -> None:
+    """ShellExecute（不经过 cmd.exe 解析），用于 UWP / 开始菜单里能解析但不在 PATH 的应用名。"""
+    os.startfile(path)  # type: ignore[attr-defined]
 
 if sys.platform != "win32":  # pragma: no cover
     raise ImportError("gua.env.windows 只能在 Windows 上使用；离线调试请用 gua.env.mock")
@@ -75,37 +82,16 @@ class WindowsEnv(Env):
 
     def _raws(self, root) -> list[dict]:
         out = []
-        ox, oy = self._mon["left"], self._mon["top"]
+        off = (self._mon["left"], self._mon["top"])
         for ctrl, _depth in auto.WalkControl(root, includeTop=False, maxDepth=self.uia_depth):
             if len(out) >= self.max_elements * 3:
                 break
             try:
-                native = ctrl.ControlTypeName.replace("Control", "")
-                role = UIA_ROLE.get(native, "other")
-                if role in {"group", "other", "window", "list", "menu", "scrollbar"}:
-                    continue
-                r = ctrl.BoundingRectangle
-                if r.width() <= 0 or r.height() <= 0 or ctrl.IsOffscreen:
-                    continue
-                val = None
-                try:
-                    vp = ctrl.GetValuePattern()
-                    val = vp.Value[:80] if vp else None
-                except Exception:
-                    pass
-                checked = None
-                if role in {"checkbox", "radio"}:
-                    try:
-                        checked = ctrl.GetTogglePattern().ToggleState == 1
-                    except Exception:
-                        pass
-                out.append({"name": ctrl.Name or "", "role": role, "native_role": native,
-                            "rect": (r.left - ox, r.top - oy, r.right - ox, r.bottom - oy),
-                            "enabled": bool(ctrl.IsEnabled), "focused": bool(ctrl.HasKeyboardFocus),
-                            "value": val, "checked": checked,
-                            "attrs": {"automation_id": ctrl.AutomationId} if ctrl.AutomationId else {}})
+                raw = uia_raw(ctrl, off)       # 含 IsPassword（审查条目 11）
             except Exception:
                 continue
+            if raw is not None:
+                out.append(raw)
         return out
 
     def observe(self, with_elements: bool = True) -> Observation:
@@ -128,7 +114,7 @@ class WindowsEnv(Env):
                 pass
         return Observation(screenshot=img, timestamp=time.time(), screen_size=img.size,
                            dpi_scale=self.dpi_scale, active_window=title, active_process=proc,
-                           windows=wins, elements=elems, platform="windows", text=text)
+                           windows=wins, elements=elems, platform="windows", text=text, cursor=self.input.position())
 
     def execute(self, a: Action) -> ExecResult:
         t0 = time.time()
@@ -146,11 +132,21 @@ class WindowsEnv(Env):
                 if not self.focus_window(a.text or ""):
                     return ExecResult(False, f"window_not_found {a.text!r}", t0, time.time())
             elif a.type == "open_app":
-                subprocess.Popen(["cmd", "/c", "start", "", a.app or a.text or ""], shell=False)
+                # v0.3：不再用 `cmd /c start`（cmd 会重新解析 & | ^ %，可被注入）；argv + 校验
+                try:
+                    app = validate_app_name(a.app or a.text)
+                    argv = windows_open_app_argv(app)
+                except InvalidAppName as e:
+                    return ExecResult(False, f"invalid_argument: {e}", t0, time.time())
+                if argv:
+                    subprocess.Popen(argv, shell=False)
+                else:
+                    _startfile(app)
                 time.sleep(1.5)
             return ExecResult(True, "", t0, time.time())
-        except pyautogui.FailSafeException:
-            raise
+        except pyautogui.FailSafeException as e:   # 兜底：输入层之外触发的 fail-safe 也是用户中止
+            from ..errors import UserAbort
+            raise UserAbort(str(e)) from e
         except Exception as e:  # noqa: BLE001
             return ExecResult(False, f"{type(e).__name__}: {e}", t0, time.time())
 

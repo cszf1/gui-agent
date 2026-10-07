@@ -7,6 +7,7 @@
 - Wayland：mss/xdotool 无法工作，需在 X11 会话（或 Xvfb）下运行
 
 只在 X11 + 真实桌面上才能端到端验证；本仓库在沙箱里只做了 AT-SPI 树转换的 fixture 测试。
+v0.3：open_app 参数校验（不接受附带参数）；fail-safe 作为 UserAbort 传播（见 env/desktop.py）。
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from PIL import Image
 from ..actions import Action
 from .a11y import atspi_tree_to_elements
 from .base import Env, ExecResult, Observation
+from .commands import InvalidAppName, linux_open_app_argv
 from .desktop import PyAutoGUIInput, clipboard_type
 
 
@@ -142,7 +144,7 @@ class LinuxEnv(Env):
             wins = [ln.split(None, 3)[-1] for ln in _sh(["wmctrl", "-l"]).splitlines() if ln.strip()][:30]
         return Observation(screenshot=img, timestamp=time.time(), screen_size=img.size, dpi_scale=1.0,
                            active_window=title, active_process=proc, windows=wins, elements=elems,
-                           platform="linux", text=text)
+                           platform="linux", text=text, cursor=self.input.position())
 
     def execute(self, a: Action) -> ExecResult:
         t0 = time.time()
@@ -159,7 +161,11 @@ class LinuxEnv(Env):
                 if not self.focus_window(a.text or ""):
                     return ExecResult(False, f"window_not_found {a.text!r}", t0, time.time())
             elif a.type == "open_app":
-                subprocess.Popen([a.app or a.text or ""], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                try:
+                    argv = linux_open_app_argv(a.app or a.text or "")
+                except InvalidAppName as e:
+                    return ExecResult(False, f"invalid_argument: {e}", t0, time.time())
+                subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  start_new_session=True)
                 time.sleep(1.5)
             return ExecResult(True, "", t0, time.time())

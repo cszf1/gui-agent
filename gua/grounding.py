@@ -7,6 +7,9 @@ WindowsAgentArena Navi 的 a11y+OmniParser 混合 SoM）：
    经 CoordMapper 按模型的坐标约定换算
 3. RegionFocus / ScreenSeekeR 风格局部放大：点击无效后围绕上次点裁剪放大再定位
 多个同名控件（两个“保存”）不猜，交给视觉，避免“身份失配”。
+
+v0.3：VLM 输出的坐标用“实际发送给模型的图像尺寸”换算（模型回复携带的 ImageTransform，审查条目 4）；
+是否允许无障碍树匹配由 CapabilityPolicy.a11y_grounding 决定（审查条目 6，build_agent 传入 use_a11y）。
 """
 from __future__ import annotations
 
@@ -16,8 +19,9 @@ from typing import Optional
 
 from PIL import Image
 
-from .coords import CoordMapper
+from .coords import CoordMapper, ImageTransform
 from .env.base import Observation, UIElement
+from .llm.base import reply_transform
 from .parsing import parse_point
 
 GROUND_SYSTEM = "You are a GUI grounding model. Output only the click point of the described element."
@@ -80,7 +84,13 @@ class Grounder:
         p = parse_point(out)
         if p is None:
             return None
-        return self.mapper.to_image(p[0], p[1], img.width, img.height)
+        tf = reply_transform(out)
+        if tf is None:                  # 后端没有报告发送尺寸：视为未缩放
+            tf = ImageTransform.identity(img.size)
+        tf = tf.with_convention(self.mapper.convention, self.mapper.max_pixels)
+        if not tf.in_model_range(p[0], p[1]):
+            return None                 # 越出模型坐标系：当作定位失败，而不是点到屏幕外
+        return tf.model_to_screenshot(p[0], p[1])
 
     # 3) 局部放大
     def ground_zoom(self, img: Image.Image, target: str, focus: tuple[int, int]) -> Optional[tuple[int, int, tuple]]:

@@ -6,6 +6,10 @@
   默认 Actor 只说“点什么”（element_id 或 target 描述），坐标交给 Grounder（Agent S / UGround 的
   planner–grounder 分离）；也可配置为直接输出坐标（end-to-end，coord_space 指定坐标约定）。
 - UITarsActor：用 UI-TARS 原生提示词与输出格式的端到端 actor。
+
+v0.3：
+- 所有提示词按 CapabilityPolicy 组装（审查条目 6）：vision_only 下不出现元素 id / 名字 / 值 / 可见文本。
+- Actor 输出坐标时，把模型回复携带的 ImageTransform（实际发送的图像尺寸）挂到 Action 上（审查条目 4）。
 """
 from __future__ import annotations
 
@@ -14,7 +18,9 @@ from typing import Optional
 
 from .actions import UNSUPPORTED, Action
 from .env.base import Observation
+from .llm.base import reply_transform
 from .parsing import extract_json, parse_model_action, parse_uitars
+from .policy import DEFAULT_POLICY, CapabilityPolicy
 
 PLATFORM_DESC = {
     "windows": "a Windows desktop", "macos": "a macOS desktop", "linux": "a Linux (X11) desktop",
@@ -29,6 +35,7 @@ class Subgoal:
     expected: str = ""      # 完成后界面应该是什么样
     evidence: str = ""      # 如何确认真的完成（文件已保存、值已写入……）
     expect_text: str = ""   # 可选：完成后屏幕/无障碍树中必然出现的文字（L1 规则核验，零模型调用）
+    persistent: bool = True  # expect_text 在任务结束时是否仍应可见（任务收尾核验会重新检查所有 persistent 的 expect_text）
 
 
 PLAN_SYSTEM = "You are a careful planner for a GUI agent operating {pdesc}."
@@ -38,8 +45,9 @@ Open windows/pages: {windows}
 
 Break the task into 1-8 ordered sub-goals. Each must be checkable on screen.
 If some text will certainly be visible once a sub-goal is done, put it in "expect_text" (else leave empty).
+Set "persistent": false if that text disappears later in the task (e.g. a transient toast).
 Reply JSON only:
-{{"subgoals": [{{"goal": "...", "expected": "what the screen shows after it", "evidence": "how to confirm it is truly done", "expect_text": ""}}]}}"""
+{{"subgoals": [{{"goal": "...", "expected": "what the screen shows after it", "evidence": "how to confirm it is truly done", "expect_text": "", "persistent": true}}]}}"""
 
 REPLAN_PROMPT = """Task: {task}
 Completed milestones:
@@ -102,66 +110,104 @@ def _url(obs: Observation) -> str:
 
 
 class Planner:
-    def __init__(self, llm, platform: str = "windows"):
-        self.llm = llm
-        self.platform = platform
-
     def _sys(self) -> str:
         return PLAN_SYSTEM.format(pdesc=PLATFORM_DESC.get(self.platform, self.platform))
 
-    def _parse(self, text: str, start_id: int = 1) -> list[Subgoal]:
-        obj = extract_json(text)
+    def __init__(self, llm, platform: str = "windows", policy: CapabilityPolicy = DEFAULT_POLICY):
+        self.llm = llm
+        self.platform = platform
+        self.policy = policy
+
+    def _parse(self, text: str, start_id: int = 1, task: str = "") -> list[Subgoal]:
+        try:
+            obj = extract_json(text)
+        except ValueError:
+            obj = {}
         sgs = obj.get("subgoals") or obj.get("items") or []
         out = []
-        for i, s in enumerate(sgs):
+        for i, s in enumerate(sgs if isinstance(sgs, list) else []):
             if isinstance(s, str):
                 s = {"goal": s}
-            out.append(Subgoal(start_id + i, s.get("goal", ""), s.get("expected", ""), s.get("evidence", ""),
-                               s.get("expect_text", "") or ""))
-        return out or [Subgoal(start_id, "complete the task", "", "")]
+            if not isinstance(s, dict):
+                continue
+            txt = lambda k: s.get(k) if isinstance(s.get(k), str) else ""   # noqa: E731
+            out.append(Subgoal(start_id + len(out), txt("goal"), txt("expected"), txt("evidence"),
+                               txt("expect_text"), s.get("persistent", True) is not False))
+        return out or [Subgoal(start_id, task or "complete the task", "", "")]
+
+    def _meta(self, obs: Observation) -> dict:
+        if not self.policy.window_metadata:
+            return {"window": "(hidden)", "url": "", "windows": "(hidden)"}
+        return {"window": obs.active_window, "url": _url(obs), "windows": obs.windows[:15]}
 
     def plan(self, task: str, obs: Observation) -> list[Subgoal]:
-        out = self.llm.chat(self._sys(), PLAN_PROMPT.format(
-            task=task, window=obs.active_window, url=_url(obs), windows=obs.windows[:15]), [obs.screenshot])
-        return self._parse(out)
+        m = self._meta(obs)
+        out = self.llm.chat(self._sys(), PLAN_PROMPT.format(task=task, **m), [obs.screenshot])
+        return self._parse(out, 1, task)
 
     def replan(self, task: str, obs: Observation, failed: Subgoal, notes: str,
                milestones: str, next_id: int, lessons: str = "(none)") -> list[Subgoal]:
+        m = self._meta(obs)
         out = self.llm.chat(self._sys(), REPLAN_PROMPT.format(
             task=task, milestones=milestones, goal=failed.goal, notes=notes, lessons=lessons,
-            window=obs.active_window, url=_url(obs)), [obs.screenshot])
-        return self._parse(out, next_id)
+            window=m["window"], url=m["url"]), [obs.screenshot])
+        return self._parse(out, next_id, task)
 
 
 class Actor:
     def __init__(self, llm, platform: str = "windows", max_elements_in_prompt: int = 80,
-                 coord_space: Optional[str] = None):
+                 coord_space: Optional[str] = None, policy: CapabilityPolicy = DEFAULT_POLICY,
+                 max_pixels: int = 1280 * 28 * 28):
         self.llm = llm
         self.platform = platform
         self.max_el = max_elements_in_prompt
         self.coord_space = coord_space   # None = planner–grounder 分离；否则 actor 直接给坐标
+        self.policy = policy
+        self.max_pixels = max_pixels     # coord_space=resized 时模型侧 smart_resize 的 max_pixels
 
     def system_prompt(self) -> str:
         bad = UNSUPPORTED.get(self.platform, set())
-        lines = [doc for name, doc in _ACTION_DOC.items() if name not in bad]
+        docs = dict(_ACTION_DOC)
+        if not self.policy.a11y_in_prompts:     # 纯视觉：没有元素列表，也就没有 element_id
+            docs["click"] = docs["click"].split(" or with ")[0].replace('"element_id": <id>', '"target":"<visible element description>"')
+        lines = [doc for name, doc in docs.items() if name not in bad]
         if self.coord_space:
             lines.append(_COORD_DOC.format(space=self.coord_space, hint=_COORD_HINT.get(self.coord_space, "")))
-        return ACT_SYSTEM.format(pdesc=PLATFORM_DESC.get(self.platform, self.platform),
+        sysp = ACT_SYSTEM.format(pdesc=PLATFORM_DESC.get(self.platform, self.platform),
                                  actions="\n".join(" " + l for l in lines))
+        if not self.policy.a11y_in_prompts:
+            sysp = sysp.replace("Prefer element_id when the element is in the list. ", "Describe targets by what "
+                                "is visible in the screenshot. ").replace("Elements marked\noffscreen must be "
+                                                                         "scrolled into view first. ", "")
+        return sysp
 
     def user_prompt(self, task, sg, total, obs, history, milestones, feedback="", notes="(none)") -> str:
-        els = "\n".join(e.brief() for e in obs.elements[: self.max_el]) or "(not available, use vision)"
+        if self.policy.a11y_in_prompts:
+            els = "\n".join(e.brief() for e in obs.elements[: self.max_el]) or "(not available, use vision)"
+        else:
+            els = "(not provided: vision only, use the screenshot)"
         fb = f"Feedback from verifier: {feedback}" if feedback else ""
+        meta = self.policy.window_metadata
         return ACT_PROMPT.format(task=task, sid=sg.id, total=total, goal=sg.goal, expected=sg.expected or "-",
                                  milestones=milestones, notes=notes, history=history, feedback=fb,
-                                 window=obs.active_window, url=_url(obs), elements=els)
+                                 window=obs.active_window if meta else "(hidden)", url=_url(obs) if meta else "",
+                                 elements=els)
 
     def next_action(self, task: str, sg: Subgoal, total: int, obs: Observation, history: str,
                     milestones: str, feedback: str = "", notes: str = "(none)") -> tuple[Action, str]:
         out = self.llm.chat(self.system_prompt(),
                             self.user_prompt(task, sg, total, obs, history, milestones, feedback, notes),
                             [obs.screenshot])
-        return parse_model_action(out, self.coord_space or "pixel")
+        a, th = parse_model_action(out, self.coord_space or "pixel")
+        attach_transform(a, out, self.max_pixels)
+        return a, th
+
+
+def attach_transform(a: Action, reply, max_pixels: int) -> None:
+    """把模型回复里“实际发送的图像”的坐标变换挂到动作上（只在动作带模型坐标时有意义）。"""
+    tf = reply_transform(reply)
+    if tf is not None and (a.x is not None or a.x2 is not None):
+        a.transform = tf.with_convention(a.coord_space, max_pixels)
 
 
 UITARS_COMPUTER = """You are a GUI agent. You are given a task and your action history, with screenshots. You need to perform the next action to complete the task.
@@ -199,15 +245,20 @@ UITARS_MOBILE = UITARS_COMPUTER.replace(
 class UITarsActor:
     """UI-TARS 原生端到端 actor（提示词改写自 bytedance/UI-TARS codes/ui_tars/prompt.py）。"""
 
-    def __init__(self, llm, platform: str = "windows", coord_space: str = "resized", language: str = "Chinese"):
+    def __init__(self, llm, platform: str = "windows", coord_space: str = "resized", language: str = "Chinese",
+                 max_pixels: int = 1280 * 28 * 28, policy: CapabilityPolicy = DEFAULT_POLICY):
         self.llm = llm
         self.platform = platform
         self.coord_space = coord_space
         self.language = language
+        self.max_pixels = max_pixels
+        self.policy = policy      # UI-TARS 提示词本来就只有截图 + 历史，不含无障碍信息
 
     def next_action(self, task, sg, total, obs, history, milestones, feedback="", notes="(none)"):
         tmpl = UITARS_MOBILE if self.platform == "android" else UITARS_COMPUTER
         instr = f"{task}\nCurrent sub-goal: {sg.goal}\nPrevious steps:\n{history}" + (f"\nFeedback: {feedback}" if feedback else "")
         out = self.llm.chat("You are a helpful assistant.", tmpl.format(language=self.language, instruction=instr),
                             [obs.screenshot])
-        return parse_uitars(out, self.coord_space)
+        a, th = parse_uitars(out, self.coord_space)
+        attach_transform(a, out, self.max_pixels)
+        return a, th

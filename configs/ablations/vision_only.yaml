@@ -1,4 +1,7 @@
-# 消融：纯截图 + 鼠标键盘，不用无障碍树（定位与 L1 规则都不用 a11y）
+# 消融：纯截图 + 鼠标键盘，不用无障碍树 / DOM。
+# v0.3：observation.use_a11y=false 是总开关——定位、L1 规则、Actor/Planner/Verifier/Reflector 提示词里都不出现
+# 元素 id / 名字 / 值 / 可见文本；窗口标题与 URL（窗口管理器元数据）仍提供。安全闸门仍使用无障碍信息（不削弱安全）。
 extends: ../default.yaml
+observation: {use_a11y: false}
 grounding: {use_a11y: false}
 verification: {use_a11y: false}

@@ -41,6 +41,9 @@ class UIElement:
     offscreen: bool = False          # 在当前视口外（Web 长页面 / 列表），需要先滚动
     native_role: str = ""            # 平台原始角色（UIA ControlType / AXRole / Android class / ARIA role）
     attrs: dict = field(default_factory=dict)   # 其他平台特有信息（resource-id、package、selector……）
+    # 密码 / 安全输入框（v0.3，审查条目 11）：来自 UIA IsPasswordProperty、macOS AXSecureTextField(子)角色、
+    # Android password 属性、Web input[type=password]、AT-SPI "password text" 角色。安全闸门据此判断。
+    is_password: bool = False
 
     @property
     def control_type(self) -> str:   # 兼容 v0.1
@@ -63,7 +66,7 @@ class UIElement:
     def brief(self) -> str:
         v = f" value={self.value!r}" if self.value else ""
         flags = ("" if self.enabled else " disabled") + (" focused" if self.focused else "") + \
-                (" offscreen" if self.offscreen else "") + \
+                (" offscreen" if self.offscreen else "") + (" password" if self.is_password else "") + \
                 ("" if self.checked is None else (" checked" if self.checked else " unchecked"))
         return f"[{self.id}] {self.role} {self.name!r}{v}{flags}"
 
@@ -81,6 +84,7 @@ class Observation:
     platform: str = ""
     url: str = ""                           # web 专用
     text: str = ""                          # 可见文本（Web innerText / 无障碍树里的文字），供 L1 规则核验
+    cursor: Optional[tuple[int, int]] = None  # 当前鼠标位置（截图像素），未知为 None（Claude 拖拽起点用）
 
     def element(self, eid: int) -> Optional[UIElement]:
         for e in self.elements:

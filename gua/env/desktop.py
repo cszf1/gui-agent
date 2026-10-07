@@ -2,6 +2,11 @@
 
 截图像素与 pyautogui 坐标之间可能有缩放（macOS Retina：截图像素 = 2 × point），
 scale = 截图宽 / pyautogui.size() 宽；执行前统一除以 scale。
+
+v0.3：
+- pyautogui 的 FailSafeException（鼠标甩到屏幕角落 = 人工紧急停止）统一转换为 gua.errors.UserAbort 向上传播，
+  三个桌面平台都不再把它当作普通执行失败吞掉（审查条目 10）。
+- 键名先经 gua.keys.canonical_key 规范化，再映射到各平台名字（审查条目 8）。
 """
 from __future__ import annotations
 
@@ -9,6 +14,8 @@ import time
 from typing import Optional
 
 from ..actions import Action
+from ..errors import UserAbort
+from ..keys import canonical_key
 from .base import ExecResult
 
 MAC_KEYS = {"ctrl": "ctrl", "cmd": "command", "command": "command", "meta": "command", "win": "command",
@@ -16,15 +23,11 @@ MAC_KEYS = {"ctrl": "ctrl", "cmd": "command", "command": "command", "meta": "com
 
 
 def norm_key(k: str, platform: str) -> str:
-    k = k.strip().lower()
-    alias = {"control": "ctrl", "escape": "esc", "return": "enter", "del": "delete", "windows": "win",
-             "super": "win", "pgup": "pageup", "pgdn": "pagedown"}
-    k = alias.get(k, k)
+    """规范键名 → pyautogui 键名。meta（cmd/win/super）在 macOS 是 command，在 Windows/Linux 是 win。"""
+    k = canonical_key(k)
     if platform == "macos":
         return MAC_KEYS.get(k, k)
-    if platform == "linux" and k in {"cmd", "meta", "command"}:
-        return "win"
-    if platform == "windows" and k in {"cmd", "meta", "command"}:
+    if k == "meta":
         return "win"
     return k
 
@@ -46,7 +49,24 @@ class PyAutoGUIInput:
         return int(x / self.scale) + self.offset[0], int(y / self.scale) + self.offset[1]
 
     def run(self, a: Action, focus=None) -> Optional[ExecResult]:
-        """执行通用输入动作；返回 None 表示该动作不归输入层管（交给平台后端）。"""
+        """执行通用输入动作；返回 None 表示该动作不归输入层管（交给平台后端）。
+
+        FailSafeException → UserAbort（终止整次运行，不是可恢复的执行失败）。
+        """
+        try:
+            return self._run(a)
+        except self.pg.FailSafeException as e:
+            raise UserAbort(f"pyautogui fail-safe triggered (mouse moved to a screen corner): {e}") from e
+
+    def position(self) -> Optional[tuple[int, int]]:
+        """当前鼠标位置（截图像素）。"""
+        try:
+            x, y = self.pg.position()
+            return int((x - self.offset[0]) * self.scale), int((y - self.offset[1]) * self.scale)
+        except Exception:
+            return None
+
+    def _run(self, a: Action) -> Optional[ExecResult]:
         pg = self.pg
         t0 = time.time()
         if a.type in {"click", "double_click", "right_click", "move", "long_press"}:

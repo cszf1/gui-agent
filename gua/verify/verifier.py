@@ -11,6 +11,11 @@
   "none"       不验证（原始执行循环基线）
   "every_step" 每步都调 L2（固定每步验证基线）
   "on_event"   只有 L1 判断不了、或子目标收尾时才调 L2（本项目主方法）
+
+v0.3：
+- 是否允许 L2、L1 是否用无障碍证据、提示词里能否放可见文本，统一由 CapabilityPolicy 决定（审查条目 6）。
+- 新增 check_final：任务收尾核验 = 重新规则核验每个子目标的 expect_text + （需要时）整任务聚合 L2；
+  只有明确的 success 才算成功，uncertain / 无法解析一律不是成功（审查条目 2）。
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ from typing import Optional
 from ..actions import Action
 from ..env.base import ExecResult, Observation
 from ..parsing import extract_json
+from ..policy import CapabilityPolicy
 from .diff import frame_diff, region_diff, side_by_side
 
 
@@ -66,6 +72,15 @@ Is the sub-goal truly complete RIGHT NOW (e.g. file saved, value actually entere
 Do not trust earlier history; judge only from the current screen.
 Reply JSON only: {{"verdict": "success" | "failed" | "uncertain", "evidence": "<observation>"}}"""
 
+FINAL_PROMPT = """Screenshot of the current screen, at the END of the task.
+Whole task: {task}
+The task was split into these sub-goals; ALL of them must hold on the current screen:
+{subgoals}
+{text_block}Is the WHOLE task complete RIGHT NOW? A sub-goal that was done earlier but was later undone
+(e.g. a setting reverted, a dialog discarded the change) means the task is NOT complete.
+Do not trust earlier history; judge only from the current screen.
+Reply JSON only: {{"verdict": "success" | "failed" | "uncertain", "evidence": "<observation per sub-goal>"}}"""
+
 BUSY_RE = re.compile(r"(\bloading\b|please wait|\bprocessing\b|\bsaving\.\.\.|加载中|正在加载|请稍候|处理中|正在保存)", re.I)
 _CHANGE_ACTIONS = {"click", "double_click", "right_click", "long_press", "type", "hotkey", "drag"}
 
@@ -76,13 +91,25 @@ def _norm(s: str) -> str:
 
 class Verifier:
     def __init__(self, llm=None, trigger: str = "on_event", local_thresh: float = 0.01,
-                 global_thresh: float = 0.003, use_a11y: bool = True, platform: str = "desktop"):
+                 global_thresh: float = 0.003, use_a11y: bool = True, platform: str = "desktop",
+                 policy: Optional[CapabilityPolicy] = None):
         self.llm = llm
         self.trigger = trigger
         self.local_thresh = local_thresh
         self.global_thresh = global_thresh
         self.use_a11y = use_a11y
         self.platform = platform
+        self.llm_step = self.llm_goal = True
+        self.a11y_prompt = use_a11y
+        if policy is not None:
+            self.trigger = policy.step_trigger
+            self.use_a11y = policy.a11y_rules
+            self.llm_step, self.llm_goal = policy.llm_step_verify, policy.llm_goal_verify
+            self.a11y_prompt = policy.a11y_in_prompts
+        self.policy = policy
+
+    def _screen_text(self, obs: Observation) -> str:
+        return obs.all_text()[:1500] if self.a11y_prompt else "(not provided: vision only)"
 
     # ---------------------------------------------------------------- L0 + L1
     def rule_check(self, before: Observation, after: Observation, action: Action, exec_res: ExecResult,
@@ -168,6 +195,8 @@ class Verifier:
     def model_check(self, before: Observation, after: Observation, action: Action, expected: str) -> Check:
         if self.llm is None:
             return Check(Verdict.UNCERTAIN, "no verifier model", "L2")
+        if not self.llm_step:
+            return Check(Verdict.UNCERTAIN, "L2 verification disabled by policy (rules only)", "L1")
         mark = action.point
         img = side_by_side(before.screenshot, after.screenshot, mark)
         out = self.llm.chat(STEP_SYSTEM.format(platform=self.platform), STEP_PROMPT.format(
@@ -182,7 +211,7 @@ class Verifier:
                          "verification disabled" if exec_res.ok else exec_res.error, "off",
                          {"exec_error": exec_res.error} if not exec_res.ok else {})
         rc = self.rule_check(before, after, action, exec_res, stable, task_window, expect_text)
-        if self.trigger == "every_step" and rc.level != "L0":
+        if self.trigger == "every_step" and rc.level != "L0" and self.llm_step and self.llm is not None:
             mc = self.model_check(before, after, action, expected)
             mc.signals = rc.signals
             return mc
@@ -203,15 +232,58 @@ class Verifier:
         if expect_text and self.use_a11y:
             if expect_text.lower() in obs.all_text().lower():
                 return Check(Verdict.SUCCESS, f"current screen shows {expect_text!r}", "goal-L1")
-            if self.llm is None:
+            if self.llm is None or not self.llm_goal:
                 return Check(Verdict.FAILED, f"{expect_text!r} not found on current screen", "goal-L1")
-        if self.llm is None:
-            return Check(Verdict.UNCERTAIN, "no verifier model and no rule evidence", "goal-L1")
+        if self.llm is None or not self.llm_goal:
+            return Check(Verdict.UNCERTAIN, "no rule evidence and L2 unavailable/disabled", "goal-L1")
         out = self.llm.chat(STEP_SYSTEM.format(platform=self.platform),
-                            GOAL_PROMPT.format(goal=goal, evidence=evidence or goal, text=obs.all_text()[:1500]),
+                            GOAL_PROMPT.format(goal=goal, evidence=evidence or goal, text=self._screen_text(obs)),
                             [obs.screenshot])
-        c = _parse_check(out)
+        c = _parse_check(out, allowed=_GOAL_VERDICTS)
         c.level = "goal-L2"
+        return c
+
+    def check_final(self, obs: Observation, task: str, subgoals: list, final_l2: str = "when_needed") -> Check:
+        """任务收尾核验（只看当前屏幕）。
+
+        1) 规则：每个带 expect_text 且 persistent 的子目标，其文字现在必须仍在屏幕/无障碍树中（零模型调用）；
+           任何一个消失 → FAILED（例如 A 打开后又被 B 的操作恢复成关闭）。
+        2) 若所有子目标都有可规则核验的证据且全部通过，并且 final_l2=when_needed → SUCCESS（final-L1）。
+        3) 否则用整任务 + 全部子目标预期做一次聚合 L2；L2 不可用 → UNCERTAIN。只有明确 success 才算成功。
+        """
+        if self.trigger == "none":
+            return Check(Verdict.SUCCESS, "goal verification disabled", "off")
+        text = obs.all_text().lower()
+        checkable = [sg for sg in subgoals if getattr(sg, "expect_text", "") and getattr(sg, "persistent", True)]
+        if self.use_a11y:
+            gone = [sg for sg in checkable if sg.expect_text.lower() not in text]
+            if gone:
+                desc = "; ".join(f"sub-goal {sg.id} ({sg.goal!r}) expected {sg.expect_text!r}" for sg in gone)
+                return Check(Verdict.FAILED, f"no longer true on the current screen: {desc}", "final-L1",
+                             {"failed_subgoals": [sg.id for sg in gone]})
+            if subgoals and len(checkable) == len(subgoals) and final_l2 != "always":
+                return Check(Verdict.SUCCESS, f"all {len(subgoals)} sub-goal expectations visible now", "final-L1")
+        if self.llm is None or not self.llm_goal:
+            missing = [sg.id for sg in subgoals if sg not in checkable] if self.use_a11y else [sg.id for sg in subgoals]
+            return Check(Verdict.UNCERTAIN, f"sub-goals {missing} have no rule evidence and L2 is unavailable/disabled",
+                         "final-L1")
+        lines = []
+        for sg in subgoals:
+            bits = [f"{sg.id}. {sg.goal}"]
+            if sg.expected:
+                bits.append(f"expected: {sg.expected}")
+            if sg.evidence:
+                bits.append(f"evidence: {sg.evidence}")
+            if sg.expect_text:
+                bits.append(f"text that should be visible: {sg.expect_text!r}")
+            lines.append(" | ".join(bits))
+        tb = (f"Visible text / accessibility summary (may be partial):\n{obs.all_text()[:1500]}\n"
+              if self.a11y_prompt else "")
+        out = self.llm.chat(STEP_SYSTEM.format(platform=self.platform),
+                            FINAL_PROMPT.format(task=task, subgoals="\n".join(lines) or "(none)", text_block=tb),
+                            [obs.screenshot])
+        c = _parse_check(out, allowed=_GOAL_VERDICTS)
+        c.level = "final-L2"
         return c
 
 
@@ -231,10 +303,19 @@ def busy_count(obs: Observation) -> int:
     return n + len(BUSY_RE.findall(obs.text or ""))
 
 
-def _parse_check(text: str) -> Check:
+_GOAL_VERDICTS = {Verdict.SUCCESS, Verdict.FAILED, Verdict.UNCERTAIN}
+
+
+def _parse_check(text: str, allowed=None) -> Check:
+    """解析 L2 回复。无法解析 / 缺 verdict / 非法标签 → UNCERTAIN（绝不默认成功）。"""
     try:
         obj = extract_json(text)
-        v = Verdict(str(obj.get("verdict", "uncertain")).lower())
+        raw = obj.get("verdict")
+        if not isinstance(raw, str):
+            return Check(Verdict.UNCERTAIN, f"verifier gave no verdict: {str(text)[:120]!r}", "L2")
+        v = Verdict(raw.strip().lower())
+        if allowed is not None and v not in allowed:
+            return Check(Verdict.UNCERTAIN, f"verdict {v.value!r} not valid here: {obj.get('evidence', '')}", "L2")
         return Check(v, str(obj.get("evidence", "")), "L2")
     except Exception:
-        return Check(Verdict.UNCERTAIN, f"unparseable verifier output: {text[:120]!r}", "L2")
+        return Check(Verdict.UNCERTAIN, f"unparseable verifier output: {str(text)[:120]!r}", "L2")

@@ -11,6 +11,10 @@
 
 所有 adb 调用都经过可注入的 runner(args:list[str], binary:bool) → bytes|str，
 因此可以在没有设备的机器上用假 runner 做单元测试（tests/test_android_env.py）。
+
+v0.3（审查条目 7）：`adb shell <字符串>` 会被设备上的 sh 解析，所以每条命令都先构造成 argv，
+每个参数 shlex.quote 后再拼接；不再用 `&&` 串联（多条命令逐条发送）；包名 / Activity 与键名先做白名单校验。
+v0.2 的反斜杠转义漏掉了换行（`a\nreboot` 会执行 reboot），包名与键名完全未转义。
 """
 from __future__ import annotations
 
@@ -24,18 +28,46 @@ from typing import Callable, Optional
 from PIL import Image
 
 from ..actions import Action
+from ..keys import canonical_key
 from .a11y import android_xml_to_elements
 from .base import Env, ExecResult, Observation
+from .commands import ANDROID_PACKAGE
 
-KEYCODES = {"back": 4, "home": 3, "enter": 66, "return": 66, "delete": 67, "backspace": 67, "del": 112,
+# 规范键名（gua.keys）→ Android keycode。delete = 向前删除 KEYCODE_FORWARD_DEL(112)，backspace = KEYCODE_DEL(67)
+KEYCODES = {"back": 4, "home": 3, "enter": 66, "return": 66, "delete": 112, "backspace": 67, "del": 112,
             "tab": 61, "esc": 111, "escape": 111, "menu": 82, "search": 84, "up": 19, "down": 20,
             "left": 21, "right": 22, "space": 62, "power": 26, "volume_up": 24, "volume_down": 25,
-            "app_switch": 187, "recent": 187}
+            "app_switch": 187, "recent": 187, "pageup": 92, "pagedown": 93, "ctrl": 113, "alt": 57,
+            "shift": 59, "meta": 117, "insert": 124, "f1": 131, "f4": 134}
+_KEYCODE_NAME = re.compile(r"^KEYCODE_[A-Z0-9_]+$")
+
+
+class InvalidCommand(ValueError):
+    pass
+
+
+def keycode(k: str) -> str:
+    c = canonical_key(k)
+    if c in KEYCODES:
+        return str(KEYCODES[c])
+    ks = str(k).strip()
+    if ks.isdigit() and int(ks) < 1000:
+        return ks
+    if _KEYCODE_NAME.match(ks):
+        return ks
+    raise InvalidCommand(f"invalid key {k!r}")
+
+
+def check_package(app: str) -> str:
+    a = (app or "").strip()
+    if not ANDROID_PACKAGE.match(a):
+        raise InvalidCommand(f"invalid app/package name {app!r}")
+    return a
 Runner = Callable[[list, bool], object]
 
 
 def escape_input_text(s: str) -> str:
-    """`adb shell input text` 的转义：空格→%s，shell 元字符加反斜杠。"""
+    """（v0.2 遗留，已不再使用：漏掉了换行等字符）`adb shell input text` 的反斜杠转义。v0.3 改为 argv + shlex.quote。"""
     out = []
     for ch in s:
         if ch == " ":
@@ -123,50 +155,57 @@ class AndroidEnv(Env):
 
     # ---------------------------------------------------------------- 执行
     def command_for(self, a: Action) -> Optional[str]:
-        """把动作翻译成一条 adb shell 命令（便于测试与日志）。返回 None 表示无需 shell。"""
-        x, y = (int(a.x), int(a.y)) if a.x is not None else (None, None)
+        """日志 / 测试用：多条命令以 ' && ' 显示（执行时逐条发送，见 commands_for）。None 表示不支持。"""
+        cmds = self.commands_for(a)
+        return None if cmds is None else " && ".join(shlex.join(c) for c in cmds)
+
+    def commands_for(self, a: Action) -> Optional[list[list[str]]]:
+        """把动作翻译成若干条 argv（每个参数之后会被 shlex.quote）。返回 None 表示不支持；参数非法抛 InvalidCommand。"""
+        x, y = (str(int(a.x)), str(int(a.y))) if a.x is not None else (None, None)
         if a.type == "click":
-            return f"input tap {x} {y}"
+            return [["input", "tap", x, y]]
         if a.type == "double_click":
-            return f"input tap {x} {y} && input tap {x} {y}"
+            return [["input", "tap", x, y], ["input", "tap", x, y]]
         if a.type == "long_press":
-            ms = int((a.seconds or 0.8) * 1000)
-            return f"input swipe {x} {y} {x} {y} {ms}"
+            ms = str(int((a.seconds or 0.8) * 1000))
+            return [["input", "swipe", x, y, x, y, ms]]
         if a.type == "drag":
-            return f"input swipe {x} {y} {int(a.x2)} {int(a.y2)} 400"
+            return [["input", "swipe", x, y, str(int(a.x2)), str(int(a.y2)), "400"]]
         if a.type == "scroll":
             w, h = self.screen_size()
             cx, cy = (x, y) if x is not None else (w // 2, h // 2)
             d = min(a.amount * self.scroll_unit_px, int(h * 0.4))
             # 手指方向与内容滚动方向相反：内容向下滚 = 手指向上滑
             ex, ey = {"down": (cx, cy - d), "up": (cx, cy + d), "left": (cx + d, cy), "right": (cx - d, cy)}[a.direction]
-            return f"input swipe {cx} {cy} {max(0, ex)} {max(0, ey)} 300"
+            return [["input", "swipe", str(cx), str(cy), str(max(0, ex)), str(max(0, ey)), "300"]]
         if a.type == "type":
-            parts = []
+            parts: list[list[str]] = []
             if a.clear:
-                parts.append("input keyevent KEYCODE_MOVE_END && input keyevent " + " ".join(["67"] * 40))
+                parts.append(["input", "keyevent", "KEYCODE_MOVE_END"])
+                parts.append(["input", "keyevent"] + ["67"] * 40)
             txt = a.text or ""
             if txt.isascii():
-                parts.append(f"input text {escape_input_text(txt)}" if txt else "true")
+                if txt:
+                    # `input text` 把 %s 解释为空格；参数本身由 shlex.quote 保护，换行 / ; / $() 都无法逃逸
+                    parts.append(["input", "text", txt.replace(" ", "%s")])
             elif self.adb_keyboard:
-                parts.append(f"am broadcast -a ADB_INPUT_TEXT --es msg {shlex.quote(txt)}")
+                parts.append(["am", "broadcast", "-a", "ADB_INPUT_TEXT", "--es", "msg", txt])
             else:
                 return None
             if a.submit:
-                parts.append("input keyevent 66")
-            return " && ".join(parts)
+                parts.append(["input", "keyevent", "66"])
+            return parts
         if a.type == "hotkey":
-            codes = [str(KEYCODES.get(k.lower(), k)) for k in a.keys]
-            return "input keyevent " + " ".join(codes)
+            return [["input", "keyevent"] + [keycode(k) for k in a.keys]]
         if a.type == "back":
-            return "input keyevent 4"
+            return [["input", "keyevent", "4"]]
         if a.type == "home":
-            return "input keyevent 3"
+            return [["input", "keyevent", "3"]]
         if a.type == "open_app":
-            app = a.app or a.text or ""
+            app = check_package(a.app or a.text or "")
             if "/" in app:
-                return f"am start -n {app}"
-            return f"monkey -p {app} -c android.intent.category.LAUNCHER 1"
+                return [["am", "start", "-n", app]]
+            return [["monkey", "-p", app, "-c", "android.intent.category.LAUNCHER", "1"]]
         return None
 
     def execute(self, a: Action) -> ExecResult:
@@ -180,13 +219,18 @@ class AndroidEnv(Env):
         err = self._bounds_error(a, w, h)
         if err:
             return ExecResult(False, err, t0, time.time())
-        cmd = self.command_for(a)
-        if cmd is None:
+        try:
+            cmds = self.commands_for(a)
+        except InvalidCommand as e:
+            return ExecResult(False, f"invalid_argument: {e}", t0, time.time())
+        if cmds is None:
             if a.type == "type":
                 return ExecResult(False, "unsupported non-ASCII text without ADBKeyboard", t0, time.time())
             return ExecResult(False, f"unsupported action {a.type}", t0, time.time())
         try:
-            out = self.shell(cmd)
+            out = ""
+            for argv in cmds:
+                out += self.shell(shlex.join(argv))
             if a.type == "open_app" and ("No activities found" in out or "Error" in out):
                 return ExecResult(False, f"app_not_found {a.app}", t0, time.time())
             return ExecResult(True, "", t0, time.time(), output=out[:200])

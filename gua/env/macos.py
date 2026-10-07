@@ -8,6 +8,7 @@
 
 权限：终端（或 Python）需要在「系统设置 → 隐私与安全性」里同时授予“辅助功能”和“屏幕录制”。
 本仓库在沙箱里只做了 AX 树转换的 fixture 测试，真实 macOS 上未验证。
+v0.3：open_app / 激活窗口不再拼接命令字符串；fail-safe 作为 UserAbort 传播（见 env/desktop.py）。
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ from PIL import Image
 from ..actions import Action
 from .a11y import ax_tree_to_elements
 from .base import Env, ExecResult, Observation
+from .commands import InvalidAppName, macos_activate_argv, macos_open_app_argv
 from .desktop import PyAutoGUIInput, clipboard_type
 
 if sys.platform != "darwin":  # pragma: no cover
@@ -117,7 +119,7 @@ class MacOSEnv(Env):
             text = f"(AX failed: {e}; 检查“辅助功能”权限)"
         return Observation(screenshot=img, timestamp=time.time(), screen_size=img.size, dpi_scale=self.scale,
                            active_window=f"{app_name} - {title}" if title else app_name, active_process=app_name,
-                           windows=wins, elements=elems, platform="macos", text=text)
+                           windows=wins, elements=elems, platform="macos", text=text, cursor=self.input.position())
 
     def execute(self, a: Action) -> ExecResult:
         t0 = time.time()
@@ -135,7 +137,11 @@ class MacOSEnv(Env):
                 if not self.focus_window(a.text or ""):
                     return ExecResult(False, f"window_not_found {a.text!r}", t0, time.time())
             elif a.type == "open_app":
-                subprocess.run(["open", "-a", a.app or a.text or ""], check=True, timeout=15)
+                try:
+                    argv = macos_open_app_argv(a.app or a.text or "")
+                except InvalidAppName as e:
+                    return ExecResult(False, f"invalid_argument: {e}", t0, time.time())
+                subprocess.run(argv, check=True, timeout=15)
                 time.sleep(1.5)
             return ExecResult(True, "", t0, time.time())
         except Exception as e:  # noqa: BLE001
@@ -146,6 +152,7 @@ class MacOSEnv(Env):
         if not title_substring:
             return False
         app = title_substring.split(" - ")[0]
-        r = subprocess.run(["osascript", "-e", f'tell application "{app}" to activate'], capture_output=True)
+        # v0.3：应用名经 `on run argv` 传入，不拼进 AppleScript 源码（防止引号 / 换行注入）
+        r = subprocess.run(macos_activate_argv(app), capture_output=True)
         time.sleep(0.4)
         return r.returncode == 0

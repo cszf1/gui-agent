@@ -149,7 +149,8 @@ def test_budget_limit_stops_run():
     agent = build(env, lambda s, t, i: '{"action":{"type":"wait","seconds":0}}',
                   cfg=AgentConfig(max_steps=50, max_budget_calls=4, settle_timeout=0.1, task_window="Mock"))
     res = agent.run("save")
-    assert res.status == "budget_limit" and res.budget.calls >= 4
+    # v0.3：状态名改为 budget_exhausted，且调用数是硬上限（== 4，绝不超过）
+    assert res.status == "budget_exhausted" and res.budget.calls == 4 and not res.claimed_done
 
 
 def test_unparseable_actor_output_gets_feedback():

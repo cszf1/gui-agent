@@ -5,7 +5,7 @@ import pytest
 
 from gua.actions import Action, parse_action
 from gua.env.a11y import finalize, uia_raw
-from gua.env.uia_execution import ObservedControl, activate_control
+from gua.env.uia_execution import ObservedControl, activate_control, replace_control_text
 from gua.recovery import RecoveryPolicy
 from gua.verify import Check, Verdict
 from fakes import fake_pyautogui, import_platform_module
@@ -153,3 +153,110 @@ def test_windows_stops_ascii_input_immediately_when_an_input_event_moves_focus(m
     env._bound_elements, env._controls = {0: element}, {"0": (first, first.identity)}
     result = env.execute(Action("type", text="PRIVATE", binding={"snapshot_id": "observed"}))
     assert not result.ok and "stale_target" in result.error and written == ["P"]
+
+
+class ValueControl(Control):
+    """Native provider with app-owned text and real write/read outcomes."""
+    def __init__(self):
+        super().__init__("Edit")
+        self.Name, self.HasKeyboardFocus = "Name", True
+        self.text, self.writes, self.reads = "Previous text", [], 0
+        self.IsReadOnly = False
+        self.on_write = lambda: None
+
+    def GetValuePattern(self): return self
+
+    @property
+    def Value(self):
+        assert not self.IsPassword, "Password content must not be read"
+        self.reads += 1
+        return self.text
+
+    def SetValue(self, text, waitTime=0.5):
+        self.writes.append((text, waitTime))
+        self.text = text
+        self.on_write()
+        return True
+
+
+@pytest.mark.parametrize("text", ["GUI Agent", "GUI Agent 测试用户", ""])
+def test_native_text_replacement_checks_the_actual_value(text):
+    ctrl = ValueControl()
+    result = replace_control_text(observed(ctrl), text, lambda: None)
+    assert result.ok and result.route == "uia_value"
+    assert ctrl.text == text and ctrl.writes == [(text, 0)]
+
+
+@pytest.mark.parametrize("change", ["identity", "name", "disabled", "password", "focus", "read_only"])
+def test_native_text_preflight_refuses_changes_without_writing(change):
+    ctrl = ValueControl()
+    bound = observed(ctrl)
+    if change == "identity": ctrl.identity = (7, 8, 9)
+    elif change == "name": ctrl.Name = "Password"
+    elif change == "disabled": ctrl.IsEnabled = False
+    elif change == "password": ctrl.IsPassword = True
+    elif change == "focus": ctrl.HasKeyboardFocus = False
+    elif change == "read_only": ctrl.IsReadOnly = True
+    reads = ctrl.reads
+    result = replace_control_text(bound, "PRIVATE", lambda: None)
+    assert not result.ok and "stale_target" in result.error and not ctrl.writes
+    assert ctrl.text == "Previous text" and "PRIVATE" not in result.error
+    if change == "password": assert ctrl.reads == reads
+
+
+@pytest.mark.parametrize("outcome", ["false_ack", "exception", "wrong_value", "password", "focus"])
+def test_uncertain_native_text_write_never_allows_a_keyboard_replay(outcome):
+    ctrl = ValueControl()
+    bound = observed(ctrl)
+    def set_value(text, waitTime=0):
+        ctrl.writes.append(text)
+        ctrl.text = text if outcome != "wrong_value" else "Provider rejected replacement"
+        if outcome == "password": ctrl.IsPassword = True
+        if outcome == "focus": ctrl.HasKeyboardFocus = False
+        if outcome == "exception": raise RuntimeError("PRIVATE was partially written")
+        return outcome != "false_ack"
+    ctrl.SetValue = set_value
+    def check():
+        if not ctrl.HasKeyboardFocus: raise ValueError("focus changed")
+    result = replace_control_text(bound, "PRIVATE", check)
+    assert not result.ok and "native_action_error" in result.error and ctrl.writes == ["PRIVATE"]
+    assert "PRIVATE" not in result.error
+    check = Check(Verdict.FAILED, result.error, "L0", {"exec_error": result.error})
+    assert not RecoveryPolicy(fixed_retry=True).decide(check, Action("type", text="PRIVATE", clear=True)).actions
+
+
+def test_password_and_unsupported_native_fields_keep_the_guarded_keyboard_path():
+    ctrl = ValueControl()
+    ctrl.IsPassword = True
+    bound = observed(ctrl)
+    reads = ctrl.reads
+    assert replace_control_text(bound, "PRIVATE", lambda: None) is None
+    assert ctrl.reads == reads and not ctrl.writes
+    ctrl = Control("Edit")
+    ctrl.HasKeyboardFocus = True
+    assert replace_control_text(observed(ctrl), "Value", lambda: None) is None
+
+
+@pytest.mark.parametrize("submit", [False, True])
+def test_windows_native_replacement_does_not_append_old_text_or_retype(monkeypatch, submit):
+    import sys
+    from gua.env.desktop import PyAutoGUIInput
+    pg = fake_pyautogui()
+    monkeypatch.setitem(sys.modules, "pyautogui", pg)
+    win = import_platform_module(monkeypatch, "windows", "win32")
+    ctrl = ValueControl()
+    monkeypatch.setattr(win, "auto", SimpleNamespace(GetFocusedControl=lambda: ctrl))
+    env = win.WindowsEnv.__new__(win.WindowsEnv)
+    env.input = PyAutoGUIInput("windows", 1)
+    env._mon = {"width": 800, "height": 600, "left": 0, "top": 0}
+    env._snapshot_id, env._snapshot_window = "observed", (1, 22)
+    env._window_key = lambda: (1, 22)
+    element = observed(ctrl).element
+    element.attrs["uia_key"] = "0"
+    env._bound_elements, env._controls = {0: element}, {"0": (ctrl, ctrl.identity)}
+    result = env.execute(Action("type", text="GUI Agent 测试用户", clear=True, submit=submit,
+                                binding={"snapshot_id": "observed"}))
+    assert result.ok and result.route == ("uia_value_submit" if submit else "uia_value")
+    assert ctrl.text == "GUI Agent 测试用户" and len(ctrl.writes) == 1
+    assert pg.calls == ([("write", ("",), {"interval": 0.01}), ("press", ("enter",), {})] if submit else [])
+    assert env.input.focus_check is None

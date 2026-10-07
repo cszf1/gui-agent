@@ -59,8 +59,7 @@ Unknown identity, changed semantics or state refuse without attempting input.
         elif expected.role in {"radio", "tab", "listitem", "treeitem"}:
             pattern, method, route = ctrl.GetSelectionItemPattern(), "Select", "uia_select"
         elif expected.role == "textbox":
-            # Do not write through ValuePattern: the existing typing/consent
-            # path remains responsible for input payloads and focus checks.
+            # Focus only. Payload replacement has its own consent/focus gate.
             route = "uia_focus"
             if ctrl.SetFocus() is False:
                 return ExecResult(False, "native_action_error: focus was not acknowledged; observe again",
@@ -79,3 +78,58 @@ Unknown identity, changed semantics or state refuse without attempting input.
     except Exception as exc:
         return ExecResult(False, f"stale_target: control could not be verified ({type(exc).__name__})",
                           started, time.time()), None
+
+
+def replace_control_text(bound: ObservedControl, text: str, check_focus,
+                         offset: tuple[int, int] = (0, 0)) -> ExecResult | None:
+    """Replace a consented, focused plain Edit value and verify the outcome.
+
+    None permits keyboard fallback only when no native write was attempted.
+    Passwords and document editors keep their existing input path. An uncertain
+    native write must never be followed by a second keyboard write. Neither
+    values nor provider exception messages appear in the returned diagnostics.
+    """
+    started = time.time()
+    ctrl, expected = bound.control, bound.element
+    attempted = False
+    try:
+        check_focus()
+        # Never request a password's ValuePattern or read its contents.
+        if expected.is_password:
+            return None
+        if not bound.runtime or runtime_id(ctrl) != bound.runtime:
+            raise ValueError("identity changed")
+        if bool(ctrl.IsPassword):
+            raise ValueError("security changed")
+        raw = uia_raw(ctrl, offset)
+        if (raw is None or not raw["enabled"] or not raw["focused"]
+                or raw["is_password"]
+                or re.sub(r"\s+", " ", raw["name"]).strip()[:100] != expected.name
+                or raw["role"] != expected.role
+                or raw["attrs"].get("automation_id", "") != expected.attrs.get("automation_id", "")):
+            raise ValueError("semantics changed")
+        if expected.role != "textbox" or raw["native_role"] != "Edit":
+            return None
+        pattern = ctrl.GetValuePattern()
+        if pattern is None:
+            return None
+        if pattern.IsReadOnly:
+            raise ValueError("read-only input")
+        check_focus()
+        if runtime_id(ctrl) != bound.runtime or not ctrl.IsEnabled or bool(ctrl.IsPassword):
+            raise ValueError("state changed")
+        attempted = True
+        # UIAutomation's default half-second sleep is unnecessary: SetValue is
+        # synchronous and the real value/focus are checked before success.
+        acknowledged = pattern.SetValue(text, waitTime=0)
+        check_focus()
+        if bool(ctrl.IsPassword):
+            raise ValueError("security changed")
+        if acknowledged is False or pattern.Value != text:
+            return ExecResult(False, "native_action_error: text replacement not verified; observe again, do not replay",
+                              started, time.time(), route="uia_value")
+        return ExecResult(True, "", started, time.time(), route="uia_value")
+    except Exception as exc:
+        reason = "native_action_error" if attempted else "stale_target"
+        return ExecResult(False, f"{reason}: text replacement could not be verified ({type(exc).__name__}); observe again",
+                          started, time.time(), route="uia_value")

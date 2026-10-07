@@ -98,14 +98,16 @@ def main():
             cfg = load_config(root / "configs/default.yaml", {"env": {"platform": "windows"},
                 "safety": {"mode": "deny"}, "reflection": {"enabled": False}, "verification": {"llm": False}})
             agent = build_agent(cfg, env, llms=ScriptedPolicy({}).llms(), task_window=title)
+            input_routes = []
             for text in ("GUI Agent", "GUI Agent 测试用户"):
                 obs = agent._observe()
                 assert title in obs.active_window, obs.active_window
                 action, source = agent._resolve(Action("type", target="Name", text=text, clear=True), obs)
                 assert source != "grounding_failed", "Native textbox is missing from UIA"
                 result = agent._execute_gated(action, obs)
-                assert result.ok, result.error
+                assert result.ok and result.route == "uia_value", (result, text)
                 wait_for(lambda row: row.get("name") == text)
+                input_routes.append(result.route)
             routes = []
             for name, route in [("Subscribe", "uia_toggle"), ("Pro", "uia_select"), ("Continue", "uia_invoke")]:
                 obs = agent._observe()
@@ -116,7 +118,7 @@ def main():
             actual = wait_for(lambda row: row.get("clicks") == 1 and row.get("checked") and row.get("selected"))
             assert actual["name"] == "GUI Agent 测试用户" and actual["clicks"] == 1
             print("Real Windows WinForms/UIA outcomes verified: ASCII + Chinese input, toggle, select, invoke.")
-            print(json.dumps({"routes": routes, "outcome": actual}, ensure_ascii=True))
+            print(json.dumps({"input_routes": input_routes, "routes": routes, "outcome": actual}, ensure_ascii=True))
         finally:
             if env is not None:
                 env.close()

@@ -26,7 +26,7 @@ from .a11y import finalize, uia_raw
 from .base import Env, ExecResult, Observation
 from .commands import InvalidAppName, validate_app_name, windows_open_app_argv
 from .desktop import PyAutoGUIInput, clipboard_type
-from .uia_execution import ObservedControl, activate_control, runtime_id
+from .uia_execution import ObservedControl, activate_control, replace_control_text, runtime_id
 
 
 def _startfile(path: str) -> None:
@@ -113,6 +113,7 @@ class WindowsEnv(Env):
         current = auto.GetFocusedControl()
         if not bound[1] or runtime_id(current) != bound[1] or bool(current.IsPassword) != expected.is_password:
             raise ValueError("stale_target: keyboard focus or security changed; stop typing")
+        return ObservedControl(*bound, expected)
 
     def _hit_test(self, point, expected):
         try:
@@ -211,6 +212,18 @@ class WindowsEnv(Env):
                         return ExecResult(False, err, t0, time.time())
                 if a.type == "type":
                     self.input.focus_check = self._check_typed_focus
+                    if a.clear:
+                        native = replace_control_text(self._check_typed_focus(), a.text or "",
+                                                      self._check_typed_focus,
+                                                      (self._mon["left"], self._mon["top"]))
+                        if native is not None:
+                            if not native.ok or not a.submit:
+                                return native
+                            # Submission still checks focus and uses a single
+                            # physical Enter after the verified replacement.
+                            r = self.input.run(replace(a, text="", clear=False))
+                            r.route, r.started = "uia_value_submit", t0
+                            return r
             r = self.input.run(a)
             if r is not None:
                 r.route = "windows_input"

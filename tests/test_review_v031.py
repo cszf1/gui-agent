@@ -494,7 +494,9 @@ def test_r07_agent_never_reports_done_while_busy():
 
 
 def test_r07_agent_waits_for_busy_to_clear_then_succeeds():
-    res = _report_agent(fast(ReportEnv(clear_after=4), timeout=0.05)).run("generate the report")
+    # Two stable 1280x800 frames can take over 50 ms on a loaded CI runner.
+    # This case tests eventual completion after Loading clears, not render speed.
+    res = _report_agent(fast(ReportEnv(clear_after=4), timeout=0.5)).run("generate the report")
     assert res.status == "done", res.message
 
 

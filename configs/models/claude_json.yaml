@@ -1,0 +1,5 @@
+# Claude 作为普通多模态模型（输出 JSON 动作，走我们的 a11y/VLM grounder）
+models:
+  planner: {provider: anthropic, model: claude-sonnet-4-5, api_key_env: ANTHROPIC_API_KEY, max_tokens: 1024}
+  grounder: {provider: openai, model: ui-tars-1.5-7b, base_url: "http://localhost:8000/v1", api_key_env: GROUNDER_API_KEY, max_tokens: 64}
+actor: {kind: json}

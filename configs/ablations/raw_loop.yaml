@@ -1,0 +1,5 @@
+# 基线 1：原始执行循环（不验证、不恢复、不做收尾核验、不反思）
+extends: ../default.yaml
+verification: {trigger: none, verify_goals: false}
+recovery: {enabled: false}
+reflection: {enabled: false}

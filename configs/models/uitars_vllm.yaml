@@ -1,0 +1,8 @@
+# UI-TARS-1.5-7B 端到端（自己出坐标），vLLM 部署：
+#   vllm serve ByteDance-Seed/UI-TARS-1.5-7B --served-model-name ui-tars-1.5-7b --limit-mm-per-prompt image=5
+# 规划与验证仍可用另一个模型；这里全部用 UI-TARS 以便零成本跑通。
+models:
+  planner: {provider: openai, model: ui-tars-1.5-7b, base_url: "http://localhost:8000/v1", api_key_env: GROUNDER_API_KEY, max_tokens: 512}
+  grounder: {provider: openai, model: ui-tars-1.5-7b, base_url: "http://localhost:8000/v1", api_key_env: GROUNDER_API_KEY, max_tokens: 64}
+actor: {kind: uitars, coord_space: resized, language: Chinese}
+grounding: {coord: resized, max_pixels: 1003520}

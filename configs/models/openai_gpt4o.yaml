@@ -1,0 +1,5 @@
+# OpenAI GPT-4o 做规划/决策/验证 + 本地 vLLM 部署的 UI-TARS-1.5-7B 做定位（Agent S 推荐的组合思路）
+models:
+  planner: {provider: openai, model: gpt-4o, api_key_env: OPENAI_API_KEY, image_max_side: 1600}
+  grounder: {provider: openai, model: ui-tars-1.5-7b, base_url: "http://localhost:8000/v1", api_key_env: GROUNDER_API_KEY, max_tokens: 64}
+grounding: {coord: resized, max_pixels: 1003520}

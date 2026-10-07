@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gui-agent"
+version = "0.2.0"
+description = "Cross-platform GUI agent with verifiable execution and failure recovery (SRTP research codebase)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "openai>=1.30",
+  "pillow>=10",
+  "numpy>=1.24",
+  "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+windows = ["mss>=9", "pyautogui>=0.9.54", "uiautomation>=2.0.18", "pyperclip>=1.8", "psutil>=5.9"]
+macos = ["pyautogui>=0.9.54", "pyperclip>=1.8", "pyobjc-framework-Quartz>=10", "pyobjc-framework-ApplicationServices>=10", "pyobjc-framework-Cocoa>=10"]
+# AT-SPI 绑定 pyatspi 通常来自系统包（apt install python3-pyatspi gir1.2-atspi-2.0），pip 不可装
+linux = ["mss>=9", "pyautogui>=0.9.54", "pyperclip>=1.8"]
+android = []          # 只需要 PATH 里有 adb（Android SDK platform-tools）
+web = ["playwright>=1.40"]
+office = ["openpyxl>=3.1", "python-docx>=1.1"]   # excel_cell / docx_contains 判分器
+dev = ["pytest>=7"]
+all = ["gui-agent[web,office,dev]"]
+
+[project.scripts]
+gua = "gua.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gua*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["web: needs playwright + chromium (skipped automatically if missing)"]

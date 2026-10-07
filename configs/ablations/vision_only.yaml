@@ -1,0 +1,4 @@
+# 消融：纯截图 + 鼠标键盘，不用无障碍树（定位与 L1 规则都不用 a11y）
+extends: ../default.yaml
+grounding: {use_a11y: false}
+verification: {use_a11y: false}

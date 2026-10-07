@@ -1,0 +1,5 @@
+# CI / 单元测试用：mock 平台
+extends: default.yaml
+env: {platform: mock}
+safety: {mode: deny}
+agent: {settle_timeout: 0.5, settle_interval: 0.05}

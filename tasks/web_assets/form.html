@@ -1,0 +1,23 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Contact form</title>
+<style>body{font-family:sans-serif;margin:40px;font-size:16px}label{display:block;margin:14px 0 4px}
+input[type=text],input[type=email]{width:320px;padding:6px;font-size:16px}button{margin-top:20px;padding:8px 20px;font-size:16px}
+#status{margin-top:20px;font-weight:bold;color:#1a7f37}</style></head><body>
+<h1>Contact form</h1>
+<label for="name">Name</label><input id="name" type="text" placeholder="Name">
+<label for="email">Email</label><input id="email" type="email" placeholder="Email">
+<fieldset style="margin-top:14px;width:320px"><legend>Plan</legend>
+ <label><input type="radio" name="plan" value="basic" checked> Basic</label>
+ <label><input type="radio" name="plan" value="pro"> Pro</label></fieldset>
+<label><input id="news" type="checkbox"> Subscribe to newsletter</label>
+<button id="submit" onclick="submitForm()">Submit</button>
+<div id="status"></div>
+<script>
+function submitForm(){
+  const n=document.getElementById('name').value.trim(), e=document.getElementById('email').value.trim();
+  const plan=document.querySelector('input[name=plan]:checked').value, news=document.getElementById('news').checked;
+  const s=document.getElementById('status');
+  if(!n||!e){ s.style.color='#cf222e'; s.innerText='Error: name and email are required'; return; }
+  s.style.color='#1a7f37'; s.innerText=`Submitted: ${n} <${e}> plan=${plan} newsletter=${news?'yes':'no'}`;
+  window.__submitted={name:n,email:e,plan:plan,news:news};
+}
+</script></body></html>

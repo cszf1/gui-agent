@@ -1,0 +1,42 @@
+{
+  "id": "web_todo_add",
+  "platform": "web",
+  "instruction": "在 Todo list 中新增一条待办“buy milk”，并把它标记为已完成。",
+  "task_window": "Todo list",
+  "start_url": "../web_assets/todo.html",
+  "checks": [
+    {
+      "type": "web_text",
+      "selector": "#count",
+      "text": "1 items, 1 done"
+    }
+  ],
+  "demo": {
+    "subgoals": [
+      {
+        "goal": "add the todo",
+        "expected": "list has buy milk",
+        "expect_text": "1 items",
+        "steps": [
+          {
+            "click": "New todo"
+          },
+          {
+            "type": "buy milk",
+            "submit": true
+          }
+        ]
+      },
+      {
+        "goal": "mark it done",
+        "expected": "count shows 1 done",
+        "expect_text": "1 items, 1 done",
+        "steps": [
+          {
+            "click": "Done: buy milk"
+          }
+        ]
+      }
+    ]
+  }
+}

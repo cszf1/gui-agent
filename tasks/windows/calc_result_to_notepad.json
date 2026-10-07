@@ -1,0 +1,53 @@
+{
+  "id": "calc_result_to_notepad",
+  "platform": "windows",
+  "instruction": "用 Windows 计算器算出 1234 × 56 的结果，然后把结果数字写进已打开的记事本 result.txt 并保存。",
+  "task_window": "",
+  "setup": [
+    {
+      "type": "remove",
+      "path": "%USERPROFILE%/gua_work/result.txt"
+    },
+    {
+      "type": "mkdir",
+      "path": "%USERPROFILE%/gua_work"
+    },
+    {
+      "type": "copy",
+      "src": "tasks/assets/empty.txt",
+      "dst": "%USERPROFILE%/gua_work/result.txt"
+    },
+    {
+      "type": "launch",
+      "cmd": [
+        "calc.exe"
+      ],
+      "wait": 2
+    },
+    {
+      "type": "launch",
+      "cmd": [
+        "notepad.exe",
+        "%USERPROFILE%/gua_work/result.txt"
+      ],
+      "wait": 2
+    }
+  ],
+  "checks": [
+    {
+      "type": "file_contains",
+      "path": "%USERPROFILE%/gua_work/result.txt",
+      "text": "69104"
+    }
+  ],
+  "teardown": [
+    {
+      "type": "kill",
+      "process": "notepad.exe"
+    },
+    {
+      "type": "kill",
+      "process": "CalculatorApp.exe"
+    }
+  ]
+}

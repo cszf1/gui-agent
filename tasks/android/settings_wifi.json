@@ -1,0 +1,27 @@
+{
+  "id": "android_settings_wifi",
+  "platform": "android",
+  "instruction": "打开系统设置，进入“网络和互联网”，查看 Wi-Fi 是否开启，并在回答里给出状态。",
+  "task_window": "com.android.settings",
+  "setup": [
+    {
+      "type": "adb",
+      "cmd": "am force-stop com.android.settings"
+    },
+    {
+      "type": "open_app",
+      "app": "com.android.settings",
+      "wait": 2
+    }
+  ],
+  "checks": [
+    {
+      "type": "android_foreground",
+      "package": "com.android.settings"
+    }
+  ],
+  "disturbance": {
+    "kind": "home",
+    "at_step": 2
+  }
+}

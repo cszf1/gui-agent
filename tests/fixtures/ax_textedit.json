@@ -1,0 +1,13 @@
+{"AXRole": "AXWindow", "AXTitle": "Untitled", "AXPosition": [0, 25], "AXSize": [800, 600], "children": [
+  {"AXRole": "AXButton", "AXSubrole": "AXCloseButton", "AXTitle": "", "AXDescription": "close button", "AXPosition": [8, 31], "AXSize": [14, 16], "AXEnabled": true},
+  {"AXRole": "AXScrollArea", "AXPosition": [0, 80], "AXSize": [800, 545], "children": [
+    {"AXRole": "AXTextArea", "AXValue": "hello", "AXDescription": "document body", "AXPosition": [0, 80], "AXSize": [800, 545], "AXFocused": true, "AXEnabled": true}]},
+  {"AXRole": "AXPopUpButton", "AXTitle": "Helvetica", "AXValue": "Helvetica", "AXPosition": [100, 50], "AXSize": [120, 22], "AXEnabled": true},
+  {"AXRole": "AXCheckBox", "AXTitle": "Bold", "AXValue": 1, "AXPosition": [240, 50], "AXSize": [22, 22], "AXEnabled": true},
+  {"AXRole": "AXRadioButton", "AXSubrole": "AXTabButton", "AXTitle": "Format", "AXPosition": [300, 50], "AXSize": [60, 22]},
+  {"AXRole": "AXSheet", "AXDescription": "Save dialog", "AXPosition": [200, 100], "AXSize": [400, 200], "children": [
+    {"AXRole": "AXButton", "AXTitle": "Save", "AXPosition": [480, 260], "AXSize": [80, 24], "AXEnabled": true},
+    {"AXRole": "AXButton", "AXTitle": "Cancel", "AXPosition": [390, 260], "AXSize": [80, 24], "AXEnabled": false},
+    {"AXRole": "AXSecureTextField", "AXTitle": "Password", "AXPosition": [220, 200], "AXSize": [200, 22]}]},
+  {"AXRole": "AXStaticText", "AXValue": "Words: 1", "AXPosition": [700, 570], "AXSize": [80, 18]}
+ ]}

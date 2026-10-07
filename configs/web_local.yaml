@@ -1,0 +1,5 @@
+# 本地静态页面任务（tasks/web）：更短的稳定等待，危险动作默认拒绝
+extends: default.yaml
+env: {platform: web}
+safety: {mode: deny}
+agent: {settle_timeout: 2.0, settle_interval: 0.25, max_seconds: 180}

@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Report loader</title>
+<style>body{font-family:sans-serif;margin:40px;font-size:16px}button{padding:8px 20px;font-size:16px}
+.spin{width:48px;height:48px;border:6px solid #ddd;border-top-color:#0969da;border-radius:50%;animation:s .6s linear infinite;margin:20px 0}
+@keyframes s{to{transform:rotate(360deg)}} #result{margin-top:20px;font-weight:bold}</style></head><body>
+<h1>Report loader</h1>
+<p>Click the button to (re)load the monthly report. Loading takes a few seconds.</p>
+<button id="load" onclick="load()">Load report</button>
+<div id="spinner"></div>
+<!-- 陈旧内容：加载前就显示旧报告，用来测试“用旧证据宣告完成”（时间失配） -->
+<div id="result">Report ready: 0 rows (cached, stale)</div>
+<script>
+function load(){
+  document.getElementById('result').innerText='Loading...';
+  document.getElementById('spinner').className='spin';
+  setTimeout(()=>{ document.getElementById('spinner').className='';
+    document.getElementById('result').innerText='Report ready: 42 rows (fresh)'; window.__loaded=true; }, 3500);
+}
+</script></body></html>

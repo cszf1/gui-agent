@@ -1,0 +1,31 @@
+{
+  "id": "web_long_page_save",
+  "platform": "web",
+  "instruction": "在 Long settings 页面打开 Dark mode，然后点击页面底部的 Save settings 保存。",
+  "task_window": "Long settings",
+  "start_url": "../web_assets/long_page.html",
+  "checks": [
+    {
+      "type": "web_text",
+      "selector": "#status",
+      "text": "Settings saved (dark=true)"
+    }
+  ],
+  "demo": {
+    "subgoals": [
+      {
+        "goal": "enable dark mode and save",
+        "expected": "status shows Settings saved",
+        "expect_text": "Settings saved",
+        "steps": [
+          {
+            "click": "Dark mode"
+          },
+          {
+            "click": "Save settings"
+          }
+        ]
+      }
+    ]
+  }
+}

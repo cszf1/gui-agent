@@ -1,0 +1,78 @@
+# gui-agent 主方法配置：事件触发验证 + 分类恢复 + 子目标收尾核验 + 反思 + 安全闸门
+# 模型请叠加 configs/models/*.yaml：gua run ... -m configs/models/qwen_dashscope.yaml
+
+env:
+  platform: auto          # auto | windows | macos | linux | android | web | mock（auto 只检测本机桌面）
+  max_elements: 150       # 无障碍元素候选上限
+  windows: {uia_depth: 12, monitor: 1}
+  macos: {use_ax: true}
+  linux: {use_atspi: true, monitor: 1}
+  android: {serial: null, adb: adb, adb_keyboard: false}
+  web:
+    start_url: about:blank
+    headless: true
+    viewport: [1280, 800]
+    browser: chromium
+    allowed_domains: []   # 非空时 navigate 只允许这些域名（file:// 本地页面始终允许）
+
+models:
+  # 规划/决策/验证：任意 OpenAI 兼容多模态模型；provider: anthropic 走 Claude Messages API
+  planner:
+    provider: openai
+    model: gpt-4o
+    base_url: null
+    api_key_env: OPENAI_API_KEY
+    image_max_side: 1600
+  actor: null             # null = 与 planner 共用
+  # 定位：建议用专门的 grounding 模型（UI-TARS-1.5-7B / OpenCUA-7B / Qwen2.5-VL-7B，vLLM 部署）
+  grounder:
+    provider: openai
+    model: ui-tars-1.5-7b
+    base_url: http://localhost:8000/v1
+    api_key_env: GROUNDER_API_KEY
+    max_tokens: 64
+  verifier: null          # null = 与 actor 共用
+  reflector: null         # null = 与 verifier 共用
+
+actor:
+  kind: json              # json（planner–grounder 分离，默认）| uitars（端到端）| claude_computer_use（端到端）
+  coord_space: null       # null = 只给 element_id/target，交给 grounder；或 norm1000|norm1|resized|pixel 让 actor 直接给坐标
+  max_elements_in_prompt: 80
+
+grounding:
+  coord: resized          # grounder 输出坐标约定：norm1000 | resized | norm1 | pixel
+  max_pixels: 1003520     # 与 grounder 部署时的 max_pixels 一致（resized 换算用）
+  use_a11y: true          # 关掉即纯视觉配置
+  fuzzy: true
+  zoom_factor: 2.5
+
+verification:
+  trigger: on_event       # none | every_step | on_event
+  verify_goals: true
+  use_a11y: true          # L1 规则是否使用无障碍树证据
+
+recovery:
+  enabled: true
+  fixed_retry: false
+  max_waits: 3
+  max_recoveries_per_subgoal: 4
+  allow_undo: false
+
+reflection:
+  enabled: true
+
+safety:
+  enabled: true
+  mode: confirm           # confirm（终端询问）| deny | allow（仅沙箱/测试）
+  allowed_domains: []
+  extra_risky_words: []
+
+agent:
+  max_steps: 50
+  max_steps_per_subgoal: 15
+  max_replans: 2
+  settle_timeout: 5.0
+  settle_interval: 0.4
+  max_budget_calls: 200   # 对比实验时所有配置使用同一预算
+  max_tokens: null
+  max_seconds: 900

@@ -1,0 +1,19 @@
+{
+  "id": "android_contacts_add",
+  "platform": "android",
+  "instruction": "在通讯录（Contacts）中新建联系人 Test User，电话 13800000000，并保存。",
+  "task_window": "com.google.android.contacts",
+  "setup": [
+    {
+      "type": "open_app",
+      "app": "com.google.android.contacts",
+      "wait": 2
+    }
+  ],
+  "checks": [
+    {
+      "type": "android_text",
+      "text": "Test User"
+    }
+  ]
+}

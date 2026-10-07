@@ -1,0 +1,3 @@
+# 消融：去掉子目标收尾核验，测“错误宣告完成率”的来源
+extends: ../default.yaml
+verification: {verify_goals: false}

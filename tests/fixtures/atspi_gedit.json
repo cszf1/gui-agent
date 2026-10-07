@@ -1,0 +1,12 @@
+{"role": "frame", "name": "gua_hello.txt - gedit", "extents": [0, 0, 1280, 800], "states": ["active", "showing", "visible", "enabled", "sensitive"],
+ "children": [
+  {"role": "panel", "name": "", "extents": [0, 0, 1280, 50], "states": ["showing", "visible"], "children": [
+    {"role": "push button", "name": "Open", "extents": [10, 8, 80, 34], "states": ["showing", "visible", "enabled", "sensitive", "focusable"]},
+    {"role": "push button", "name": "Save", "extents": [1100, 8, 70, 34], "states": ["showing", "visible", "enabled", "sensitive"]},
+    {"role": "toggle button", "name": "Main Menu", "extents": [1180, 8, 40, 34], "states": ["showing", "visible", "enabled", "sensitive", "checked"]},
+    {"role": "push button", "name": "Hidden", "extents": [5, 5, 10, 10], "states": ["visible"]}]},
+  {"role": "text", "name": "", "text": "hello gui", "extents": [0, 50, 1280, 700], "states": ["showing", "visible", "enabled", "sensitive", "focused", "editable"]},
+  {"role": "label", "name": "Ln 1, Col 10", "extents": [1000, 760, 120, 30], "states": ["showing", "visible", "enabled"]},
+  {"role": "check box", "name": "Highlight", "extents": [10, 760, 100, 30], "states": ["showing", "visible", "sensitive"]},
+  {"role": "dialog", "name": "Save changes?", "extents": [400, 300, 480, 200], "states": ["showing", "visible", "modal"]}
+ ]}

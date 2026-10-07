@@ -1,0 +1,6 @@
+# Anthropic Claude：export ANTHROPIC_API_KEY=...
+# actor.kind=claude_computer_use 时使用官方 computer_20250124 工具（端到端出坐标，截图缩放到 XGA/WXGA）
+models:
+  planner: {provider: anthropic, model: claude-sonnet-4-5, api_key_env: ANTHROPIC_API_KEY, max_tokens: 1024}
+  grounder: null
+actor: {kind: claude_computer_use}

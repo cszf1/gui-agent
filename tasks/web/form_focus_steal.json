@@ -1,0 +1,58 @@
+{
+  "id": "web_form_focus_steal",
+  "platform": "web",
+  "instruction": "在联系表单中填写姓名 Alice、邮箱 alice@example.com，选择 Pro 套餐并勾选订阅新闻通讯，然后提交。（第 3 步前会被新标签页抢走焦点）",
+  "task_window": "Contact form",
+  "start_url": "../web_assets/form.html",
+  "checks": [
+    {
+      "type": "web_text",
+      "selector": "#status",
+      "text": "Submitted: Alice <alice@example.com> plan=pro newsletter=yes"
+    }
+  ],
+  "demo": {
+    "subgoals": [
+      {
+        "goal": "fill in name and email",
+        "expected": "fields contain the values",
+        "expect_text": "alice@example.com",
+        "steps": [
+          {
+            "click": "Name"
+          },
+          {
+            "type": "Alice"
+          },
+          {
+            "click": "Email"
+          },
+          {
+            "type": "alice@example.com"
+          }
+        ]
+      },
+      {
+        "goal": "choose Pro plan, subscribe, and submit",
+        "expected": "status shows Submitted",
+        "expect_text": "Submitted: Alice",
+        "steps": [
+          {
+            "click": "Pro",
+            "role": "radio"
+          },
+          {
+            "click": "Subscribe to newsletter"
+          },
+          {
+            "click": "Submit"
+          }
+        ]
+      }
+    ]
+  },
+  "disturbance": {
+    "kind": "new_tab",
+    "at_step": 3
+  }
+}

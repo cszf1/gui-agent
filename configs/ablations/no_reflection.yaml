@@ -1,0 +1,3 @@
+# 消融：关闭反思器，测“反思笔记”对恢复成功率的贡献
+extends: ../default.yaml
+reflection: {enabled: false}

@@ -1,0 +1,40 @@
+{
+  "id": "macos_textedit_hello",
+  "platform": "macos",
+  "instruction": "在已打开的 TextEdit 文档里输入 hello gui-agent，然后按 Cmd+S 保存。",
+  "task_window": "TextEdit",
+  "setup": [
+    {
+      "type": "mkdir",
+      "path": "~/gua_work"
+    },
+    {
+      "type": "copy",
+      "src": "tasks/assets/empty.txt",
+      "dst": "~/gua_work/gua_hello.txt"
+    },
+    {
+      "type": "launch",
+      "cmd": [
+        "open",
+        "-a",
+        "TextEdit",
+        "~/gua_work/gua_hello.txt"
+      ],
+      "wait": 3
+    }
+  ],
+  "checks": [
+    {
+      "type": "file_contains",
+      "path": "~/gua_work/gua_hello.txt",
+      "text": "hello gui-agent"
+    }
+  ],
+  "teardown": [
+    {
+      "type": "kill",
+      "process": "TextEdit"
+    }
+  ]
+}

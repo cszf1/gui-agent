@@ -1,0 +1,28 @@
+{
+  "id": "web_delayed_report",
+  "platform": "web",
+  "instruction": "在 Report loader 页面重新加载月度报告，并确认显示的是新数据（42 行），而不是缓存的旧报告。",
+  "task_window": "Report loader",
+  "start_url": "../web_assets/delayed.html",
+  "checks": [
+    {
+      "type": "web_text",
+      "selector": "#result",
+      "text": "42 rows"
+    }
+  ],
+  "demo": {
+    "subgoals": [
+      {
+        "goal": "reload the report and wait for fresh data",
+        "expected": "result shows 42 rows",
+        "expect_text": "42 rows",
+        "steps": [
+          {
+            "click": "Load report"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+# 基线 2：只用规则检测，失败就原样重试
+extends: ../default.yaml
+verification: {trigger: on_event, verify_goals: false}
+recovery: {fixed_retry: true}

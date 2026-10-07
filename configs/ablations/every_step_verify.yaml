@@ -1,0 +1,3 @@
+# 基线 3：每步都调用模型验证（成本上界）
+extends: ../default.yaml
+verification: {trigger: every_step}

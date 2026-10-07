@@ -1,0 +1,42 @@
+{
+  "id": "linux_gedit_hello",
+  "platform": "linux",
+  "instruction": "在已打开的文本编辑器里输入 hello gui-agent，然后按 Ctrl+S 保存。",
+  "task_window": "gua_hello",
+  "setup": [
+    {
+      "type": "mkdir",
+      "path": "~/gua_work"
+    },
+    {
+      "type": "copy",
+      "src": "tasks/assets/empty.txt",
+      "dst": "~/gua_work/gua_hello.txt"
+    },
+    {
+      "type": "launch",
+      "cmd": [
+        "gedit",
+        "~/gua_work/gua_hello.txt"
+      ],
+      "wait": 3
+    }
+  ],
+  "checks": [
+    {
+      "type": "file_contains",
+      "path": "~/gua_work/gua_hello.txt",
+      "text": "hello gui-agent"
+    }
+  ],
+  "teardown": [
+    {
+      "type": "kill",
+      "process": "gedit"
+    }
+  ],
+  "disturbance": {
+    "kind": "steal_focus",
+    "at_step": 2
+  }
+}

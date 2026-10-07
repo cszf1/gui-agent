@@ -1,0 +1,43 @@
+{
+  "id": "notepad_append_save",
+  "platform": "windows",
+  "instruction": "在已打开的记事本文件末尾另起一行输入“SRTP 测试完成”，然后保存（Ctrl+S），不要另存为其他文件。",
+  "task_window": "记事本",
+  "setup": [
+    {
+      "type": "copy",
+      "src": "tasks/assets/hello.txt",
+      "dst": "%USERPROFILE%/gua_work/notes.txt"
+    },
+    {
+      "type": "launch",
+      "cmd": [
+        "notepad.exe",
+        "%USERPROFILE%/gua_work/notes.txt"
+      ],
+      "wait": 2
+    }
+  ],
+  "checks": [
+    {
+      "type": "file_contains",
+      "path": "%USERPROFILE%/gua_work/notes.txt",
+      "text": "hello"
+    },
+    {
+      "type": "file_contains",
+      "path": "%USERPROFILE%/gua_work/notes.txt",
+      "text": "SRTP 测试完成"
+    }
+  ],
+  "teardown": [
+    {
+      "type": "kill",
+      "process": "notepad.exe"
+    }
+  ],
+  "disturbance": {
+    "kind": "steal_focus",
+    "delay": 10
+  }
+}

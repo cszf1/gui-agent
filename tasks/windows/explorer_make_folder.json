@@ -1,0 +1,35 @@
+{
+  "id": "explorer_make_folder",
+  "platform": "windows",
+  "instruction": "在文件资源管理器中打开 gua_work 文件夹，在其中新建一个名为 report_2026 的文件夹。",
+  "task_window": "gua_work",
+  "setup": [
+    {
+      "type": "remove",
+      "path": "%USERPROFILE%/gua_work/report_2026"
+    },
+    {
+      "type": "mkdir",
+      "path": "%USERPROFILE%/gua_work"
+    },
+    {
+      "type": "launch",
+      "cmd": [
+        "explorer.exe",
+        "%USERPROFILE%\\gua_work"
+      ],
+      "wait": 2
+    }
+  ],
+  "checks": [
+    {
+      "type": "file_exists",
+      "path": "%USERPROFILE%/gua_work/report_2026"
+    }
+  ],
+  "teardown": [],
+  "disturbance": {
+    "kind": "popup",
+    "delay": 6
+  }
+}

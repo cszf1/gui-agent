@@ -1,0 +1,15 @@
+# 全部使用阿里云百炼的 Qwen-VL（OpenAI 兼容模式），无需本地 GPU：export DASHSCOPE_API_KEY=...
+models:
+  planner:
+    provider: openai
+    model: qwen2.5-vl-72b-instruct
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    image_max_side: 1600
+  grounder:
+    provider: openai
+    model: qwen2.5-vl-72b-instruct
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    max_tokens: 64
+grounding: {coord: resized, max_pixels: 1003520}   # Qwen2.5-VL 输出 smart_resize 后的绝对像素

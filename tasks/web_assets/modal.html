@@ -1,0 +1,19 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Dashboard</title>
+<style>body{font-family:sans-serif;margin:40px;font-size:16px}button{padding:8px 20px;font-size:16px}
+#overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}
+#box{background:#fff;padding:30px 40px;border-radius:8px;width:380px} #status{margin-top:20px;font-weight:bold}</style></head><body>
+<h1>Dashboard</h1>
+<p>Export all records as CSV.</p>
+<button id="export" onclick="startExport()">Start export</button>
+<div id="status"></div>
+<div id="overlay" role="dialog" aria-modal="true" aria-label="Terms update">
+  <div id="box"><h2>Terms update</h2><p>Our terms changed. Please accept them to continue.</p>
+  <button id="accept" onclick="accept()">Accept terms</button></div></div>
+<script>
+let accepted=false;
+function startExport(){
+  if(!accepted){ document.getElementById('overlay').style.display='flex'; return; }  // 第一次点击被意外弹窗吞掉
+  document.getElementById('status').innerText='Export started: 128 records'; window.__exported=true;
+}
+function accept(){ accepted=true; document.getElementById('overlay').style.display='none'; }
+</script></body></html>

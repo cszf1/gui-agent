@@ -1,9 +1,9 @@
 name: desktop app
 on:
   push:
-    paths: ['desktop/**', 'gua/**', 'configs/**', 'tasks/**', 'pyproject.toml', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', 'gua/**', 'configs/**', 'tasks/**', 'pyproject.toml', 'scripts/install-playwright-ci.sh', '.github/workflows/desktop.yml']
   pull_request:
-    paths: ['desktop/**', 'gua/**', 'configs/**', 'tasks/**', 'pyproject.toml', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', 'gua/**', 'configs/**', 'tasks/**', 'pyproject.toml', 'scripts/install-playwright-ci.sh', '.github/workflows/desktop.yml']
   workflow_dispatch:
 jobs:
   desktop-tests:
@@ -15,7 +15,9 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: pip install -e ".[web,dev]"
-      - run: python -m playwright install --with-deps chromium
+      - name: Install Chromium and system dependencies
+        run: bash scripts/install-playwright-ci.sh
+        timeout-minutes: 10
       - run: npm ci
         working-directory: desktop
       - run: npm run build && npm test

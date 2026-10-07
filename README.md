@@ -28,7 +28,7 @@
 
 ### v0.5.0（源码与 Windows 安装包 CI；未发布 GitHub Release）
 
-- Windows 按观察中的控件身份使用 UIA Invoke/Toggle/Select/Focus；不支持时使用经检查的新位置，原生调用异常后不补点。
+- Windows 按观察中的控件身份使用 UIA Invoke/Toggle/Select/Focus，普通输入框优先原生填写并核对实际值；键盘清空兼容不响应 Ctrl+A 的控件，原生调用部分生效后不重放。
 - 浏览器点击绑定原始 DOM 节点，检查身份、语义、当前可见位置与遮挡；页面或控件被替换时重新判断。
 - `type` 可指定输入框元素 ID，先验证焦点再输入，减少模型往返；点击与输入/提交分别经过安全检查。
 - 浏览器按 DOM、有限动画、可读取 Canvas 的变化等待，再进行像素检查；Windows 更早采样，并保留全量收尾观察。

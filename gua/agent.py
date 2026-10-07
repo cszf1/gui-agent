@@ -31,20 +31,21 @@ from typing import Callable, Optional
 from .actions import Action, ActionParseError
 from .coords import to_pixel_action
 from .env.base import Env, ExecResult, Observation
-from .errors import UserAbort
+from .errors import PrivacyBlocked, UserAbort
 from .grounding import Grounder
-from .llm.base import Budget, BudgetExceeded
+from .llm.base import Budget, BudgetExceeded, EgressGate
 from .logger import TrajectoryLogger
 from .memory import Memory, Milestone, StepRecord
-from .planner import Actor, Planner, Subgoal
+from .planner import Actor, Planner, Subgoal, UITarsActor
 from .policy import CapabilityPolicy
 from .recovery import RecoveryPolicy, Strategy
 from .reflection import Reflector
 from .safety import SafetyGuard
-from .sensitive import SECRET_RE, Scrubber, is_sensitive_type, resolve_secrets, safe_view
+from .sensitive import (SECRET_RE, Scrubber, focus_target, is_password_el, is_sensitive_type, safe_view)
 from .verify import Check, Verdict, Verifier
 
-TERMINAL_STATUSES = {"done", "fail", "uncertain", "step_limit", "budget_exhausted", "time_limit", "user_abort"}
+TERMINAL_STATUSES = {"done", "fail", "uncertain", "step_limit", "budget_exhausted", "time_limit", "user_abort",
+                     "privacy_blocked"}
 
 
 @dataclass
@@ -110,9 +111,13 @@ class GUIAgent:
         self.before_step: list[StepHook] = []
         self._t0 = time.time()
         self._answer = ""
-        # 秘密清洗器与日志共用（日志落盘、评测结果行、RunResult 都经过它）
+        # 秘密清洗器与日志 / 安全闸门共用（日志落盘、评测结果行、RunResult、确认回调都经过它）。
+        # 配置里的秘密以 explicit=True 登记：即便短于 min_len（例如 4 位 PIN）也清洗、并立即置敏感
+        # → 该次运行后续不再向任何模型发送截图（严格阻断，见 _note_obs / EgressGate）。
         self.scrubber = logger.scrubber if logger is not None else Scrubber()
-        self.scrubber.extend(str(v) for v in (cfg.secrets or {}).values())
+        self.scrubber.extend((str(v) for v in (cfg.secrets or {}).values()), explicit=True)
+        self.guard.scrubber = self.scrubber
+        self._install_egress_gates()
         self._sg_baseline: Optional[Observation] = None
         self._task_baseline: Optional[Observation] = None
         if self.budget.max_calls is None:
@@ -124,7 +129,68 @@ class GUIAgent:
 
     # ------------------------------------------------------------------ helpers
     def _settle(self) -> tuple[Observation, bool]:
-        return self.env.wait_until_stable(timeout=self.cfg.settle_timeout, interval=self.cfg.settle_interval)
+        obs, stable = self.env.wait_until_stable(timeout=self.cfg.settle_timeout, interval=self.cfg.settle_interval)
+        self._note_obs(obs)
+        return obs, stable
+
+    def _observe(self, *args, **kwargs) -> Observation:
+        """所有观察的统一入口：拿到观察就立刻登记敏感信号（早于任何模型请求与 logger.shot）。"""
+        obs = self.env.observe(*args, **kwargs)
+        self._note_obs(obs)
+        return obs
+
+    def _note_obs(self, obs: Optional[Observation]) -> None:
+        """观察里出现密码框 / 明确无法确定的焦点 → 进入严格阻断（单调，不因下一帧没有密码元素而解除）。
+
+        秘密一旦被配置或识别，本次运行后续不再向任何模型发送截图，仅发脱敏文字 / 元素。
+        """
+        if obs is None or self.scrubber.images_blocked:
+            return
+        if focus_target(obs)[1] in {"password", "unknown"}:
+            self.scrubber.mark_sensitive()
+            return
+        for e in getattr(obs, "elements", None) or []:
+            if is_password_el(e):
+                self.scrubber.mark_sensitive()
+                return
+
+    def _vision_required(self, role: str, comp) -> bool:
+        """纯视觉角色在无图状态下无法可靠执行 → 被禁时抛 PrivacyBlocked，不伪装成功。"""
+        if role == "grounder":
+            return True                     # 定位本质是视觉；能走无障碍匹配时根本不调用模型
+        if role == "actor":
+            if isinstance(comp, UITarsActor) or type(comp).__name__ == "ClaudeComputerUseActor":
+                return True
+            if getattr(comp, "coord_space", None):
+                return True                 # 直接输出坐标的 actor 依赖截图
+            pol = getattr(comp, "policy", None)
+            return bool(pol is not None and not getattr(pol, "a11y_in_prompts", True))
+        if role == "verifier":
+            pol = getattr(self, "policy", None)
+            return bool(pol is not None and not getattr(pol, "a11y_in_prompts", True))
+        return False                        # planner / reflector 有文字上下文，无图也能继续
+
+    def _install_egress_gates(self) -> None:
+        """给每个组件的模型套上统一出口门控（chat + post 都覆盖，含 CU 直接 llm.post 的路径）。"""
+        for role, comp in (("planner", self.planner), ("actor", self.actor), ("grounder", self.grounder),
+                           ("verifier", self.verifier), ("reflector", self.reflector)):
+            llm = getattr(comp, "llm", None)
+            if llm is None or isinstance(llm, EgressGate):
+                continue
+            comp.llm = EgressGate(llm, self.scrubber, role=role,
+                                  vision_required=self._vision_required(role, comp))
+
+    def _expand_secrets(self, text: str) -> tuple[str, list[str]]:
+        """把 <secret>名字</secret> 展开成原文；未知名字不静默输入占位符本身，而是记录下来。"""
+        missing: list[str] = []
+
+        def sub(m):
+            name = m.group(1)
+            if name in (self.cfg.secrets or {}):
+                return str(self.cfg.secrets[name])
+            missing.append(name)
+            return ""
+        return SECRET_RE.sub(sub, text), missing
 
     def _limit(self) -> Optional[tuple[str, str]]:
         if self.step_no >= self.cfg.max_steps:
@@ -182,13 +248,32 @@ class GUIAgent:
     def _execute_gated(self, a: Action, obs: Optional[Observation], origin: str = "actor") -> ExecResult:
         """所有真正发往环境的动作都从这里走：先过安全闸门，拒绝即返回 blocked_by_safety（终止性，不重试）。
 
-        v0.3.1：敏感输入的原文登记到 Scrubber；秘密占位符只在这里、紧挨着 env.execute 才替换成原文。
+        次序（第三轮审查「秘密替换与闸门次序」）：
+          1) 先把 <secret>名字</secret> 展开成 exec_a（同一个真实动作）；
+          2) 用 exec_a 过 SafetyGuard.gate —— 控制字符 / 危险模式 / 激活提交语义都按**真实内容**检查
+             （反例：secret="rm -rf /"、带换行的真实密码都必须被真实内容命中）；
+          3) 只有放行才把 exec_a 发往环境。
+        原动作 a 与安全摘要保持脱敏；未知占位符不静默输入原文，而是返回 blocked_by_safety 并说明缺少配置。
         """
         state = self.guard.focus(obs)[1]
-        if a.type == "type" and a.text and is_sensitive_type(a, obs, state) and not SECRET_RE.search(a.text):
-            self.scrubber.add(a.text)
-        view, _ = self._view(a, obs)
-        approved, why = self.guard.gate(a, obs)
+        view, _ = self._view(a, obs)                 # 原动作的安全摘要（占位符 / 敏感文本一律脱敏）
+        exec_a = a
+        missing: list[str] = []
+        if a.type == "type" and a.text:
+            if SECRET_RE.search(a.text):
+                expanded, missing = self._expand_secrets(a.text)
+                exec_a = replace(a, text=expanded)
+            elif is_sensitive_type(a, obs, state):
+                self.scrubber.add(a.text, explicit=True)   # 真实敏感输入登记（短 PIN 也登记）
+        if missing:
+            why = ("secret placeholder(s) not configured: " + ", ".join(sorted(set(missing)))
+                   + "; refusing to type the placeholder literally")
+            if self.log:
+                self.log.step(kind="safety", step=self.step_no, origin=origin, action=view,
+                              reason=why, approved=False)
+            t = time.time()
+            return ExecResult(False, f"blocked_by_safety: {why}", t, t)
+        approved, why = self.guard.gate(exec_a, obs)
         why = self._scrub(why)
         if (why or not approved) and self.log:
             self.log.step(kind="safety", step=self.step_no, origin=origin, action=view,
@@ -196,9 +281,6 @@ class GUIAgent:
         if not approved:
             t = time.time()
             return ExecResult(False, f"blocked_by_safety: {why}", t, t)
-        exec_a = a
-        if a.type == "type" and a.text and self.cfg.secrets and SECRET_RE.search(a.text):
-            exec_a = replace(a, text=resolve_secrets(a.text, self.cfg.secrets))
         res = self.env.execute(exec_a)
         res.error, res.output = self._scrub(res.error), self._scrub(res.output)   # 执行层报错可能回显输入
         if not res.ok and "blocked_by_safety" in (res.error or ""):
@@ -206,10 +288,13 @@ class GUIAgent:
         return res
 
     def _settled_for_check(self, baseline: Optional[Observation] = None) -> tuple[Observation, bool]:
-        """收尾核验用的观察：未稳定或仍有忙碌指示时再等待复查（最多 busy_rechecks 次）。返回 (观察, 是否已稳定)。"""
+        """收尾核验用的观察：未稳定或仍有忙碌指示时再等待复查（最多 busy_rechecks 次）。返回 (观察, 是否已稳定)。
+
+        v0.3.1：Verifier.busy 收口为 busy(obs)（忙碌是当前屏幕的绝对信号，不再用 baseline 做豁免）。
+        """
         obs, stable = self._settle()
         for _ in range(max(0, self.cfg.busy_rechecks)):
-            if stable and not self.verifier.busy(obs, baseline):
+            if stable and not self.verifier.busy(obs):
                 break
             obs, stable = self._settle()
         return obs, stable
@@ -241,10 +326,16 @@ class GUIAgent:
             if self.log:
                 self.log.step(kind="user_abort", step=self.step_no, reason=str(e))
             return self._finish("user_abort", False, self._replans, f"user abort: {e}")
+        except PrivacyBlocked as e:
+            # 纯视觉路径（CU / UI-TARS / 视觉 grounding / vision-only）在截图被禁后无法可靠执行：
+            # 明确以受限状态终止，绝不伪装成功。
+            if self.log:
+                self.log.step(kind="privacy_blocked", step=self.step_no, reason=str(e))
+            return self._finish("privacy_blocked", False, self._replans, str(e))
 
     def _run(self, task: str) -> RunResult:
         self._replans = 0
-        obs = self.env.observe()
+        obs = self._observe()
         self._task_baseline = obs
         subgoals = self.planner.plan(task, obs)
         if self.log:
@@ -269,7 +360,7 @@ class GUIAgent:
                 if self._replans >= self.cfg.max_replans:
                     return self._finish("fail", False, self._replans, notes)
                 self._replans += 1
-                obs = self.env.observe()
+                obs = self._observe()
                 self.mem.invalidate_after(sg.id)
                 rest = self.planner.replan(task, obs, sg, self._scrub(notes), self.mem.milestones_text(), sg.id,
                                            self._scrub(self.mem.notes_text()))
@@ -297,7 +388,7 @@ class GUIAgent:
                 return self._finish(status, False, self._replans, note)
             final_retries += 1
             self._replans += 1
-            obs = self.env.observe()
+            obs = self._observe()
             failed = Subgoal(0, f"final check of the whole task: {task}", "all task requirements hold on screen")
             rest = self.planner.replan(task, obs, failed, self._scrub(note), self.mem.milestones_text(),
                                        max((sg.id for sg in subgoals), default=0) + 1,
@@ -320,7 +411,7 @@ class GUIAgent:
             self.step_no += 1
             for hook in self.before_step:
                 hook(self.step_no, self)
-            before = self.env.observe()
+            before = self._observe()
             if self._sg_baseline is None:
                 self._sg_baseline = before          # 子目标开始时的界面：旧证据基线
             if self._precheck_focus(sg, before):
@@ -349,7 +440,7 @@ class GUIAgent:
                 ok, ev = self._confirm_goal(sg)
                 if ok:
                     self._answer = action.text or self._answer
-                    self.mem.add_milestone(Milestone(sg.id, sg.goal, ev, time.time(), self.env.observe(False).screenshot))
+                    self.mem.add_milestone(Milestone(sg.id, sg.goal, ev, time.time(), self._observe(False).screenshot))
                     if self.log:
                         self.log.step(kind="milestone", subgoal=sg, evidence=ev, answer=action.text)
                     return "done", ev

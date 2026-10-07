@@ -26,6 +26,10 @@ ROLES = {"button", "link", "textbox", "checkbox", "radio", "combobox", "listitem
 INTERACTIVE_ROLES = {"button", "link", "textbox", "checkbox", "radio", "combobox", "listitem", "menuitem",
                      "tab", "treeitem", "slider", "switch", "cell"}
 
+# 密码 / 安全输入框的公共安全名称（v0.3.1 审查条目 2 / 3）：名称可能来自不可信字段
+# （Android content-desc、macOS AXTitle / AXDescription / AXHelp、UIA / AT-SPI name……），转换器与公共序列化层一律用它替换。
+SAFE_PASSWORD_NAME = "password field"
+
 
 @dataclass
 class UIElement:
@@ -64,12 +68,14 @@ class UIElement:
         return l <= x <= r and t <= y <= b
 
     def brief(self) -> str:
-        # v0.3.1（第二轮条目 6）：公共序列化层兜底——密码框的值永不输出（转换器已清空，这里再防一次）
+        # v0.3.1（条目 3）：公共序列化层兜底——密码元素不输出 name（可能来自 Android content-desc /
+        # AXTitle / UIA、AT-SPI name 等不可信字段）与 value，改用固定安全名称；普通元素原样保留。
+        name = SAFE_PASSWORD_NAME if self.is_password else self.name
         v = f" value={self.value!r}" if self.value and not self.is_password else ""
         flags = ("" if self.enabled else " disabled") + (" focused" if self.focused else "") + \
                 (" offscreen" if self.offscreen else "") + (" password" if self.is_password else "") + \
                 ("" if self.checked is None else (" checked" if self.checked else " unchecked"))
-        return f"[{self.id}] {self.role} {self.name!r}{v}{flags}"
+        return f"[{self.id}] {self.role} {name!r}{v}{flags}"
 
 
 @dataclass
@@ -101,9 +107,11 @@ class Observation:
         return min(hits, key=lambda e: e.area) if hits else None
 
     def all_text(self) -> str:
+        # v0.3.1（条目 3）：密码元素的 name 可能来自不可信字段（Android content-desc / AXTitle /
+        # UIA、AT-SPI name），公共兜底不再追加，也不追加其 value；普通元素不受影响。
         parts = [self.text, self.active_window]
-        parts += [e.name for e in self.elements]
-        parts += [e.value or "" for e in self.elements if not e.is_password]   # 密码值兜底不输出
+        parts += [e.name for e in self.elements if not e.is_password]
+        parts += [e.value or "" for e in self.elements if not e.is_password]
         return "\n".join(p for p in parts if p)
 
     def dialogs(self) -> list[UIElement]:

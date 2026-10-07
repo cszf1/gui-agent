@@ -13,9 +13,9 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from ..actions import Action
+from ..actions import Action, ActionParseError
 from ..errors import UserAbort
-from ..keys import canonical_key
+from ..keys import KeySequenceError, canonical_key, validate_sequence
 from .base import ExecResult
 
 MAC_KEYS = {"ctrl": "ctrl", "cmd": "command", "command": "command", "meta": "command", "win": "command",
@@ -51,8 +51,15 @@ class PyAutoGUIInput:
     def run(self, a: Action, focus=None) -> Optional[ExecResult]:
         """执行通用输入动作；返回 None 表示该动作不归输入层管（交给平台后端）。
 
+        第三轮条目 1：直接执行入口也要校验按键序列（tab+enter / 多字符 secret+enter 等非法组合
+        在执行前就抛 ActionParseError，平台 execute 会把它变成失败的 ExecResult，绝不真的按键）。
         FailSafeException → UserAbort（终止整次运行，不是可恢复的执行失败）。
         """
+        if a.type in {"hotkey", "key_down", "key_up"}:
+            try:
+                validate_sequence(a.keys, kind=a.type)
+            except KeySequenceError as e:
+                raise ActionParseError("bad_value", str(e), "keys") from None
         try:
             return self._run(a)
         except self.pg.FailSafeException as e:

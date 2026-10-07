@@ -29,6 +29,15 @@ v0.3.1（第二轮审查）：
   脱敏只由输入目标决定；拒绝签名里的 typed text 只存哈希。
 - assess 本身抛异常 → 按“需要确认”处理（fail-closed），deny 模式下即拒绝。
 - drag 的终点落在废纸篓 / 回收站 / 危险目标上也要确认。
+
+第三轮审查（条目 1 / 2 / 3 / 4 / 5）：
+- 按键序列严格限制：一个动作只能是“修饰键 + 恰好一个按键”，非法序列（tab+enter、多字符 secret+enter、
+  纯 modifier 的 hotkey）在这里直接 deny，不确认后执行；拒绝签名里的按键一律哈希。
+- gate / summary / 拒绝 reason / 确认 action 统一过共享 `self.scrubber`；敏感输入先登记完整 payload
+  再输出；确认回调拿到的是“安全副本”（载荷整体 redact，其余字符串字段用 Scrubber 清洗）。
+- 激活目标名改用解析到元素的真实 name / attrs.dom_id；提交目标优先 form_submit / form_submit_id；
+  解析不到元素时按坐标去重，换 target 描述绕不过已拒绝目标。
+- 焦点过期复用 _activation 语义：type 的 \n / \r / 字符激活、clear、所有移焦按键都让同一 obs 失效。
 """
 from __future__ import annotations
 
@@ -42,8 +51,9 @@ from typing import Callable, Optional
 
 from .actions import Action
 from .env.base import Observation, UIElement
-from .keys import ACTIVATION_KEYS, MODIFIERS, canonical_set
-from .sensitive import focus_target, is_password_el, is_sensitive_type, redacted_action, safe_short
+from .keys import ACTIVATION_KEYS, MODIFIERS, KeySequenceError, canonical_set, validate_sequence
+from .sensitive import (CONFIRM_STATES, Scrubber, carries_text, focus_target, is_password_el,
+                        is_sensitive_type, redacted_action, safe_short)
 from .urlpolicy import domain_allowed, host_of
 
 # 点击/确认这些语义的元素属于“不可逆或对外可见”的操作
@@ -108,9 +118,33 @@ class SafetyGuard:
     log: list[dict] = field(default_factory=list)
     denied: dict[str, str] = field(default_factory=dict)    # 动作签名 → 被拒绝的原因（终止性）
     held: set = field(default_factory=set)                  # key_down 按住、尚未 key_up 的规范键名
+    # 共享秘密清洗器（第三轮条目 5）：默认每个 SafetyGuard 自带一个，独立使用不受影响；
+    # GUIAgent 会把它替换成“整次运行同一个”实例，使普通 token 字段里的已配置秘密也不露出。
+    scrubber: Scrubber = field(default_factory=Scrubber, repr=False)
     _stale_obs: Optional[Observation] = field(default=None, repr=False)   # 已执行过移焦动作的观察
 
     # ---------------------------------------------------------------- 焦点 / 激活目标
+    def _scrub_text(self, s):
+        return self.scrubber.scrub(s) if isinstance(s, str) else s
+
+    @staticmethod
+    def _element_label(e) -> str:
+        """元素的稳定目标名：优先真实 name，其次稳定的 attrs.dom_id（第三轮条目 3）。"""
+        name = (getattr(e, "name", "") or "").strip()
+        if name:
+            return name
+        attrs = getattr(e, "attrs", {}) or {}
+        return str(attrs.get("dom_id") or attrs.get("domId") or "").strip()
+
+    def _element_identity(self, a: Action, obs: Optional[Observation]) -> str:
+        """把指针动作解析到的元素变成稳定目标名（用于拒绝去重，不掺入模型自由写的 target 描述）。"""
+        if obs is None:
+            return ""
+        e = obs.element(a.element_id) if a.element_id is not None else None
+        if e is None and a.point is not None:
+            e = obs.element_at(*a.point)
+        return self._element_label(e) if e is not None else ""
+
     def focus(self, obs: Optional[Observation]) -> tuple[Optional[UIElement], str]:
         """焦点元素与状态；同一个观察上已经执行过可能移动焦点的动作 → unknown。"""
         if obs is not None and obs is self._stale_obs:
@@ -139,18 +173,29 @@ class SafetyGuard:
         return None
 
     def activation_target(self, a: Action, obs: Optional[Observation]) -> tuple[Optional[str], str, str]:
-        """返回 (激活方式或 None, 目标名, 焦点状态)。目标名为空表示无法确定。"""
+        """返回 (激活方式或 None, 稳定目标名, 焦点状态)。目标名为空表示无法确定。
+
+        第三轮条目 3：
+        - 指针动作优先用**解析到元素的真实 name / attrs.dom_id** 作为目标名（不含模型自由写的 target），
+          这样换个 target 描述点同一个元素不会绕过已拒绝的目标。
+        - 提交动作优先用 `focus.attrs.form_submit` / `form_submit_id`，**不拼文本框的名字**；
+          没有稳定 id 时退回到该焦点元素的规范名。桌面观察没有 form_submit，就不猜同窗口里任意危险按钮。
+        """
         kind = self._activation(a, obs)
         if kind is None:
             return None, "", ""
         if kind == "pointer":
-            return kind, (self._element_name(a, obs) or a.target or "").strip(), "known"
+            return kind, self._element_identity(a, obs), "known"
         f, st = self.focus(obs)
         if f is None:
             return kind, "", st
-        label = f.name or ""
-        if kind == "submit" and f.role in _TEXT_ENTRY_ROLES:
-            label = " ".join(filter(None, [f.attrs.get("form_submit", ""), label]))
+        if kind == "submit":
+            attrs = getattr(f, "attrs", {}) or {}
+            label = (str(attrs.get("form_submit") or "").strip()
+                     or str(attrs.get("form_submit_id") or "").strip()
+                     or self._element_label(f))
+        else:
+            label = self._element_label(f)
         return kind, label.strip(), st
 
     def _activation_sig(self, a: Action, obs: Optional[Observation]) -> Optional[str]:
@@ -158,10 +203,10 @@ class SafetyGuard:
         if kind is None:
             return None
         if label:
-            return f"activate|{label.lower()}"
+            return f"activate|{self._scrub_text(label.lower())}"
         if kind == "pointer":
-            return f"{a.type}|{a.point}"
-        return f"activate|?{st}|{(obs.active_window if obs else '')}"
+            return f"{a.type}|{a.point}"          # 解析不到元素：按坐标去重，不受 target 描述影响
+        return f"activate|?{st}|{self._scrub_text(obs.active_window if obs else '')}"
 
     # ---------------------------------------------------------------- 判定
     def _combo(self, a: Action) -> frozenset:
@@ -222,15 +267,15 @@ class SafetyGuard:
                 held = f" (holding {'+'.join(sorted(self.held))})" if self.held else ""
                 hits.append((f"key combination {'+'.join(sorted(combo))}{held} contains "
                              f"{'+'.join(sorted(hit))}: may close apps or delete data", base))
-            elif sensitive:
+            elif carries_text(a) and fstate in CONFIRM_STATES:
                 hits.append(("key presses into a password / unknown input target", base))
         # 激活目标（指针、Enter/Space、提交、往按钮里打字）——同一条危险目标规则
         kind, label, st = self.activation_target(a, obs)
         if kind is not None:
             asig = self._activation_sig(a, obs)
             risk_label = label
-            if kind == "pointer":       # 指针：元素名 + 模型给的 target 描述都要看
-                risk_label = " ".join(filter(None, [self._element_name(a, obs), a.target or ""]))
+            if kind == "pointer":       # 指针：解析到的元素名 + 模型给的 target 描述都要看
+                risk_label = " ".join(filter(None, [self._element_identity(a, obs), a.target or ""]))
             w = self._risky_word(risk_label)
             if w:
                 label = risk_label
@@ -266,16 +311,17 @@ class SafetyGuard:
         return ""
 
     def base_signature(self, a: Action) -> str:
-        if a.type in {"hotkey", "key_down"}:
-            return f"keys|{'+'.join(sorted(self._combo(a)))}"
+        if a.type in {"hotkey", "key_down", "key_up"}:
+            # 第三轮条目 2：拒绝签名里的按键一律哈希，`guard.denied` 里不留任何字符明文。
+            return f"keys|{_h('+'.join(sorted(self._combo(a))))}"
         if a.type == "type":
             return f"type|{_h(a.text)}|{a.submit}"           # 只存哈希，不存明文
         if a.type == "navigate":
-            return f"navigate|{a.url or a.text}"
+            return f"navigate|{self._scrub_text(a.url or a.text or '')}"
         if a.type == "open_app":
-            return f"open_app|{(a.app or a.text or '').lower()}"
+            return f"open_app|{self._scrub_text((a.app or a.text or '').lower())}"
         if a.is_pointer:
-            return f"{a.type}|{a.target or ''}|{a.point}"
+            return f"{a.type}|{self._scrub_text(a.target or '')}|{a.point}"
         return f"{a.type}|{_h(json.dumps(a.to_dict(), sort_keys=True))}"
 
     def signatures(self, a: Action, obs: Optional[Observation] = None) -> list[str]:
@@ -295,25 +341,72 @@ class SafetyGuard:
 
     def summary(self, a: Action, obs: Optional[Observation] = None) -> str:
         """安全摘要（日志 / 终端 / 提示词）；考虑“同一观察上焦点已移动”的情况。"""
-        return safe_short(a, obs, self.focus(obs)[1])
+        return self._scrub_text(safe_short(a, obs, self.focus(obs)[1]))
 
     # ---------------------------------------------------------------- 闸门
+    def _register_payload(self, a: Action, obs: Optional[Observation]) -> None:
+        """在任何输出之前，把敏感输入的载荷登记到共享 Scrubber（第三轮条目 5）。
+
+        type 的完整原文显式登记（哪怕比 min_len 短，也是用户确认过的敏感输入）；按键动作携带的是
+        单个字符，不能当全文搜索词（会把日志抹失真），只置位 mark_sensitive + 结构化脱敏。
+        """
+        try:
+            if not is_sensitive_type(a, obs, self.focus(obs)[1]):
+                return
+            if a.type == "type" and a.text:
+                self.scrubber.add(a.text, explicit=True)
+            else:
+                self.scrubber.mark_sensitive()
+        except Exception:  # noqa: BLE001  — 判断都出错时保守置位
+            self.scrubber.mark_sensitive()
+
+    def _moves_focus(self, a: Action, obs: Optional[Observation]) -> bool:
+        """执行后是否可能移动键盘焦点（第三轮条目 4）：复用 _activation 语义。
+
+        - 明确不动焦点的动作（wait / scroll / move / key_up / ask_user / done / fail）不置过期；
+        - type：提交 / 含换行 / 往按钮里打字（字符激活）/ clear 都可能移焦；
+        - 其余（指针、按键、导航、开窗口）一律保守置过期。
+        """
+        if a.type in _FOCUS_STABLE_ACTIONS:
+            return False
+        if a.type == "type":
+            return bool(a.clear) or self._activation(a, obs) is not None
+        return True
+
     def gate(self, a: Action, obs: Optional[Observation] = None) -> tuple[bool, str]:
         """返回 (是否放行, 原因)。被拒绝过的同一动作 / 同一激活目标直接拒绝（不再询问）。"""
         if not self.enabled:
             self._track_keys(a)
             return True, ""
+        # 第三轮条目 1：非法按键序列（tab+enter、多字符 secret+enter、纯 modifier 的 hotkey）
+        # 必须拒绝，而不是确认后执行；并记入拒绝签名，之后重复提交同样直接拒绝。
+        if a.type in {"hotkey", "key_down", "key_up"}:
+            try:
+                validate_sequence(a.keys, kind=a.type)
+            except KeySequenceError as e:
+                why = self._scrub_text(f"invalid key sequence: {e}")
+                try:
+                    shown = self._scrub_text(safe_short(a, obs, self.focus(obs)[1]))
+                    sigs = self.signatures(a, obs)
+                except Exception:  # noqa: BLE001
+                    shown, sigs = json.dumps({"type": a.type, "redacted": True}), [f"error|{a.type}"]
+                self.log.append({"action": shown, "decision": "deny", "reason": why, "approved": False})
+                for s in sigs:
+                    self.denied[s] = why
+                return False, why
+        # 敏感载荷先登记，保证后续日志 / 确认 / 报错回显都能被清洗（条目 5）
+        self._register_payload(a, obs)
         err = ""
         try:
             fstate = self.focus(obs)[1]
-            shown = safe_short(a, obs, fstate)
+            shown = self._scrub_text(safe_short(a, obs, fstate))
             sigs = self.signatures(a, obs)
         except Exception as e:  # noqa: BLE001  — 摘要都算不出来：保守地完全脱敏、按危险处理
             fstate, err = "unknown", type(e).__name__
             shown, sigs = json.dumps({"type": a.type, "redacted": True}), [f"error|{a.type}"]
         hit = next((s for s in sigs if s in self.denied), None)
         if hit:
-            why = f"previously rejected, not retried: {self.denied[hit]}"
+            why = self._scrub_text(f"previously rejected, not retried: {self.denied[hit]}")
             self.log.append({"action": shown, "decision": "deny", "reason": why, "approved": False,
                              "repeat": True})
             return False, why
@@ -325,6 +418,7 @@ class SafetyGuard:
                 err = type(e).__name__
         if d is None:                 # fail-closed：判定出错 = 需要确认（deny 模式即拒绝）
             d = Decision("confirm", f"safety check error ({err}); treated as dangerous", sigs[:1])
+        reason = self._scrub_text(d.reason)
         approved = d.verdict == "allow"
         if d.verdict == "confirm":
             if self.mode == "allow":
@@ -333,17 +427,18 @@ class SafetyGuard:
                 approved = False
             else:
                 fn = self.confirm_fn or cli_confirm
-                approved = bool(fn(redacted_action(a, obs, fstate), d.reason))
-        self.log.append({"action": shown, "decision": d.verdict, "reason": d.reason, "approved": approved})
+                # 确认回调只拿到安全副本：敏感载荷整体 redact，其余字符串字段过共享 Scrubber
+                safe_a = redacted_action(a, obs, fstate, scrubber=self.scrubber)
+                approved = bool(fn(safe_a, reason))
+        self.log.append({"action": shown, "decision": d.verdict, "reason": reason, "approved": approved})
         if approved:
             self._track_keys(a)
-            if a.type not in _FOCUS_STABLE_ACTIONS and not (a.type == "type" and not a.submit
-                                                             and "\n" not in (a.text or "")):
+            if self._moves_focus(a, obs):
                 self._stale_obs = obs
         else:
             for s in (d.sigs or sigs[:1]):
-                self.denied[s] = d.reason or "rejected"
-        return approved, d.reason
+                self.denied[s] = reason or "rejected"
+        return approved, reason
 
     def _track_keys(self, a: Action) -> None:
         if a.type == "key_down":

@@ -87,3 +87,32 @@
 - Android 的 `input text` / ADBKeyboard 广播通道本身会短暂暴露明文。
 - closed shadow root 无法穿透；Web 客户端跳转改变了“后退”历史；307/308 非 GET 时地址栏停在第一跳。
 - 旧证据判定是近似；常驻的不定进度条会让收尾核验一直 uncertain。
+
+
+---
+
+# 第三轮（当前工作树安全修订）对照表
+
+基于第二轮审查（v0.3.1）提出的剩余风险与执行语义缺口进行收口修复。
+
+- 回归测试文件：
+  - `tests/test_review_url_policy.py`（离线 URL 规范化与重定向状态机）
+  - `tests/test_web_review_security.py`（真实 headless Chromium + 本地 HTTP：无脚本跳转、CSP、Cookie 隔离、移焦阻断）
+  - `tests/test_review_input_safety.py`（复合快捷键、按键签名哈希、输入错误脱敏、表单提交去重）
+  - `tests/test_review_observations.py`（密码名称收口、autocomplete token 列表、closed shadow 保守焦点）
+  - `tests/test_review_model_privacy.py`（模型出口统一清洗、严格截图阻断、短秘密结构化脱敏、真实文本过闸）
+  - `tests/test_review_completion.py`（片段级新鲜证据、现实进度忙碌行、窗口标题旧证据）
+- 实测结果：**343 passed**（在 Windows 11 / Python 3.12.10 + Chromium 153 上全部通过；`GUA_TEST_NO_PLAYWRIGHT=1` 时 304 passed, 4 skipped）。
+
+| # | 审查意见 | 改动（文件 → 做了什么） | 回归测试 |
+|---|---|---|---|
+| r08 | 高：URL 解析歧义与重定向安全（反斜杠/userinfo绕过、脚本注入、CSP卡死、POST恢复、跨源Cookie注入） | `urlpolicy.py`：新增 `normalize()` 与 `UrlRejected`，严格拒绝反斜杠、控制字符、userinfo、百分号 authority、数字/十六进制 IP 别名；`domain_allowed` fail-closed。<br>`env/web.py`：重定向改为无脚本 `meta refresh`（目标正确编码），丢弃卡死跳转的原 3xx CSP 并注入严格无脚本 CSP，多 Set-Cookie 保留；手动逐跳 fetch 维护当前方法与正文，POST 转 GET 后清空正文且后续 307 不恢复，跨源跳转剥离 Set-Cookie 等响应头；navigate 亦走规范化 URL | `test_r08_*`（test_review_url_policy.py，42 项）、`test_web_review_security.py`（无脚本跳转不执行脚本、3xx CSP 穿透、多 Cookie 保留、跨源 Cookie 隔离、POST→303→GET→307→GET 状态机） |
+| r09 | 高：复合按键先移焦再激活、按键脱敏失效、拒绝签名留原文、错误消息泄露密码 | `keys.py`：`validate_sequence()` 严格限制 `hotkey` 为零或多修饰键 + 恰好一个非修饰键，非法序列直接抛 `ActionParseError` / 闸门 deny；错误消息不回显非法键名；支持 Android 数字键码。<br>`sensitive.py`：`carries_text()` 判定有字符即携带字符，不因混入 Enter/Tab/Backspace 取消脱敏；unreported / unknown 与 password 同等脱敏。<br>`safety.py`：按键拒绝签名一律哈希（`keys|<hash>`），denied 映射无明文；移焦键与激活键混入同一动作时按未知目标保守确认 | `test_review_input_safety.py`（36 项：非法序列直接拦截、错误消息无明文、按键签名哈希、unreported 字符脱敏、移焦激活拆分要求） |
+| r10 | 高：密码识别三个盲区（autocomplete token、closed shadow、掩码元素文本泄露）及输入移焦 | `env/a11y.py`：`web_raws` 按 ASCII 空白拆分 autocomplete token 列表；密码节点名称与描述统一收口为 `password field`，排除 Android content-desc、AXTitle/Description/Help 等不可信字段；父容器命名跳过密码子树。<br>`env/base.py`：`UIElement.brief()` 与 `Observation.all_text()` 公共层彻底排除密码 name 与 value。<br>`env/web.py`：`textOf()` 排除掩码子树，`FOCUS_JS` 对非原生控件判 `unknown`；`_do_type()` 绑定输入目标并逐字检查焦点变化，移焦立即中止输入；检验执行时焦点与观察时安全属性一致 | `test_review_observations.py`（9 项：token 拆分、密码名称规范、父容器递归排除、公共序列化保护）、`test_web_review_security.py`（掩码 contenteditable 不泄露、closed shadow 判 unknown、逐字输入移焦 0 字符泄漏） |
+| r11 | 高：已知秘密回流模型出口、截图泄密 | `agent.py`：统一使用 `EgressGate` 包装所有模型出口（chat 与 post），递归清洗 system / prompt / 结构化 body 中的已知秘密（含 dict key 与额外字段）；配置秘密以 `explicit=True` 登记到 Scrubber，短 PIN 亦受保护。<br>`llm/base.py`：`EgressGate` 增加**严格截图阻断**（单调生效）：一旦识别密码框、不透明焦点或配置秘密，该次运行后续所有请求剥离图片；纯视觉角色以 `PrivacyBlocked` 终止任务并报 `privacy_blocked`，绝不无图伪装成功；`BudgetGate` 增加 `__setattr__` 透传。<br>`logger.py`：在敏感运行中停止保存截图（`shot()` 返回 None）；日志写入前使用 `scrub_obj` 保护 JSON 结构 | `test_review_model_privacy.py`（27 项：全角色出口文本清洗、单调截图阻断、短 PIN 保护、JSON 结构完整、纯视觉受限终止、日志无截图落盘、预算属性透传） |
+| r12 | 中：秘密替换在闸门之后发生、表单提交重新询问 | `agent.py`：`_execute_gated()` 先展开秘密占位符得到真实动作 `exec_a`，再以 `exec_a` 通过 `SafetyGuard.gate()`；检查真实文本的控制字符、危险命令与提交语义；未配置占位符安全拦截并报错。<br>`safety.py`：表单提交目标统一使用真实提交按钮名与 `form_submit_id`，不再拼接文本框名；表单点击与回车提交共享同一拒绝签名，消除重复询问 | `test_review_model_privacy.py`（危险秘密按真实内容拦截、换行密码按真实内容过闸、未知占位符拦截）、`test_review_input_safety.py`（表单点击与回车提交共享签名） |
+| r13 | 中：无关界面变化洗白旧证据、持续 Loading 信号被忽略 | `verify/verifier.py`：删除全局 `changed()` 与 `busy_count()`；改为片段级新鲜度比较（`_evidence_fragments`，涵盖文本行、元素 name/value 及窗口/标签标题）；只有承载证据的片段自身发生状态转换才算新鲜，全局像素/无关文本变化不再洗白旧证据。<br>`BUSY_LINE_RE` 扩展覆盖现实带进度百分比/计数的忙碌行（如 `Loading 45%`、`Processing 3/10`、`正在加载 45%` 等）；当前屏幕有忙碌状态始终 fail-closed；步骤级 L2 补充文本上下文兜底 | `test_review_completion.py`（22 项：无关像素/banner/重复行不洗白、进度数忙碌行拦截、窗口标题旧证据拦截、正向状态转换成功、L2 旧证据约束上下文） |
+
+## 第三轮随修复改动的旧测试
+
+- `tests/test_a11y_parsers.py::test_ax_tree_retina_scale`：旧断言通过 `by_name(els, "Password")` 选取密码框。由于条目 r10 确立了“所有平台的密码元素统一使用固定安全名称 `password field`，不再信任不可信标签”的明确安全契约，该断言调整为通过 `next(e for e in els if e.is_password)` 选取，并断言其 `name == SAFE_PASSWORD_NAME`、`value is None`，其余 Retina 坐标与属性断言保持不变。

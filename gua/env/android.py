@@ -28,7 +28,7 @@ from typing import Callable, Optional
 from PIL import Image
 
 from ..actions import Action
-from ..keys import canonical_key
+from ..keys import KeySequenceError, canonical_key, validate_sequence
 from .a11y import android_xml_to_elements
 from .base import Env, ExecResult, Observation
 from .commands import ANDROID_PACKAGE
@@ -196,7 +196,13 @@ class AndroidEnv(Env):
                 parts.append(["input", "keyevent", "66"])
             return parts
         if a.type == "hotkey":
-            return [["input", "keyevent"] + [keycode(k) for k in a.keys]]
+            # 第三轮条目 1：直接执行入口也要拒绝非法序列（tab+enter / 多字符 secret+enter），
+            # 不能把一串按键当成一个动作顺次 keyevent 出去。
+            try:
+                ks = validate_sequence(a.keys, kind=a.type)
+            except KeySequenceError as e:
+                raise InvalidCommand(str(e)) from None
+            return [["input", "keyevent"] + [keycode(k) for k in ks]]
         if a.type == "back":
             return [["input", "keyevent", "4"]]
         if a.type == "home":

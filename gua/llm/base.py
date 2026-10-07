@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional, Protocol
 from PIL import Image
 
 from ..coords import ImageTransform
+from ..errors import PrivacyBlocked
 
 
 class BudgetExceeded(RuntimeError):
@@ -141,6 +142,127 @@ class BudgetGate:
 
     def __getattr__(self, name):          # post / image_max_side / prompts … 透传
         return getattr(self.inner, name)
+
+    def __setattr__(self, name, value):
+        if name in ("inner", "budget", "role"):
+            super().__setattr__(name, value)
+        elif hasattr(self, "inner"):
+            setattr(self.inner, name, value)
+        else:
+            super().__setattr__(name, value)
+
+
+NO_IMAGE_NOTICE = (
+    "[privacy mode] No screenshot is provided for this request because sensitive data was detected in this run. "
+    "Do not ask for or refer to a screenshot; work only from the text (task, elements, history) below.\n\n")
+
+
+class EgressGate:
+    """模型请求出口的统一门控（模型出口组）：清洗 + 严格截图阻断。
+
+    - 清洗：每次 chat 的 system / text，以及 post() 的整个结构化 body（递归清洗字符串与 dict key / 额外字段）；
+      替换出来的 *** 不再被反复处理（由 Scrubber 保证）。
+    - 截图阻断：共享 Scrubber 一旦进入敏感状态（配置了秘密 / 观察到密码框 / 敏感输入），之后所有请求都
+      不再携带图片。普通文本角色改为“无图 + 明确提示”继续；纯视觉角色（vision_required）改抛
+      PrivacyBlocked，绝不无图伪装成功。
+    - 透传：未覆盖的属性读写（budget / role / build_payload / image_max_side / transforms …）转发给内层，
+      因此 BudgetGate 的预算记账与 LLMReply.transforms 坐标变换都不受影响。
+    """
+    _LOCAL = ("_inner", "scrubber", "role", "vision_required")
+
+    def __init__(self, inner, scrubber, role: Optional[str] = None, vision_required: bool = False):
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "scrubber", scrubber)
+        object.__setattr__(self, "role", role or getattr(inner, "role", "llm"))
+        object.__setattr__(self, "vision_required", vision_required)
+
+    def __getattr__(self, name):                 # budget / image_max_side / build_payload / prompts …
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        if name in EgressGate._LOCAL:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._inner, name, value)
+
+    @property
+    def images_blocked(self) -> bool:
+        return bool(getattr(self.scrubber, "images_blocked", False))
+
+    def chat(self, system: str, text: str, images=None):
+        text = self.scrubber.scrub(text)
+        system = self.scrubber.scrub(system)
+        if images and self.images_blocked:
+            if self.vision_required:
+                raise PrivacyBlocked(self.role, "this model needs a screenshot to act, but screenshots are blocked")
+            images = None
+            text = NO_IMAGE_NOTICE + (text or "")
+        return self._inner.chat(system, text, images)
+
+    def post(self, payload: dict, betas: Optional[list] = None) -> dict:
+        """Anthropic computer-use 等直接发结构化 body 的出口：发请求前拦下被禁的图像。"""
+        if self.images_blocked and _payload_has_images(payload):
+            if self.vision_required:
+                raise PrivacyBlocked(self.role, "computer-use needs a screenshot, but screenshots are blocked")
+            payload = _strip_images(payload)
+        return self._inner.post(_scrub_payload(payload, self.scrubber), betas)
+
+
+def _payload_has_images(obj) -> bool:
+    if isinstance(obj, dict):
+        if obj.get("type") in {"image", "image_url"} or "image_url" in obj:
+            return True
+        return any(_payload_has_images(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_payload_has_images(v) for v in obj)
+    return False
+
+
+def _strip_images(obj):
+    """删掉 body 里所有图像 block，并补一个明确的“无图”文本块（保守，不把原图藏在别处传走）。"""
+    def walk(o):
+        if isinstance(o, dict):
+            if o.get("type") in {"image", "image_url"} or "image_url" in o:
+                return None
+            out = {}
+            for k, v in o.items():
+                w = walk(v)
+                if w is not None:
+                    out[k] = w
+            return out
+        if isinstance(o, list):
+            return [w for w in (walk(v) for v in o) if w is not None]
+        if isinstance(o, tuple):
+            return tuple(w for w in (walk(v) for v in o) if w is not None)
+        return o
+    out = walk(obj)
+    try:                                        # 给最后一条 user 消息补上明确提示
+        content = out["messages"][-1]["content"]
+        if isinstance(content, list):
+            content.append({"type": "text", "text": NO_IMAGE_NOTICE.strip()})
+    except (KeyError, IndexError, TypeError):
+        pass
+    return out
+
+
+def _scrub_payload(obj, scrubber):
+    """递归清洗 body：字符串值、dict 的字符串 key、额外字段都过 Scrubber。
+
+    图像 block 整体保留（此处图像本来就获准发送）；被禁时已在 post 里整体删除，不会藏在别的字段里传走。
+    """
+    def scrub(x):
+        return scrubber.scrub(x) if isinstance(x, str) else x
+    if isinstance(obj, str):
+        return scrub(obj)
+    if isinstance(obj, dict):
+        if obj.get("type") in {"image", "image_url"} or "image_url" in obj:
+            return obj
+        return {scrub(k) if isinstance(k, str) else k: _scrub_payload(v, scrubber) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_payload(v, scrubber) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_scrub_payload(v, scrubber) for v in obj)
+    return obj
 
 
 class ScriptedLLM:

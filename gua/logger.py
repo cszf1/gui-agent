@@ -50,6 +50,9 @@ class TrajectoryLogger:
     def shot(self, step: int, tag: str, img: Image.Image) -> Optional[str]:
         if not self.save_images or img is None:
             return None
+        if getattr(self.scrubber, "images_blocked", False):
+            # 严格隐私阻断：本次运行识别到敏感信息后，任何截图都不再落盘（避免 HTML 回放泄漏）
+            return None
         p = self.dir / "shots" / f"{step:04d}_{tag}.png"
         if self.max_side and max(img.size) > self.max_side:
             img = img.copy()
@@ -59,13 +62,15 @@ class TrajectoryLogger:
 
     def step(self, **rec: Any) -> None:
         rec.setdefault("t", time.time())
-        line = self.scrubber.scrub(json.dumps(rec, ensure_ascii=False, default=_jsonable))
+        clean_rec = self.scrubber.scrub_obj(rec)
+        line = json.dumps(clean_rec, ensure_ascii=False, default=_jsonable)
         self._f.write(line + "\n")
         self._f.flush()
 
     def meta(self, **meta: Any) -> None:
         self._meta.update(meta)
-        txt = self.scrubber.scrub(json.dumps(self._meta, ensure_ascii=False, indent=2, default=_jsonable))
+        clean_meta = self.scrubber.scrub_obj(self._meta)
+        txt = json.dumps(clean_meta, ensure_ascii=False, indent=2, default=_jsonable)
         (self.dir / "meta.json").write_text(txt, encoding="utf-8")
 
     def close(self, report: bool = True) -> Optional[Path]:

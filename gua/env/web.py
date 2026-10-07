@@ -16,11 +16,28 @@ v0.3（审查条目 9）：域名白名单在**浏览器层**强制执行，而�
 4. 每个动作之后做 URL 复核：主页面若停在白名单外或拦截错误页 → 回到最后一个合法 URL；
    动作返回 ExecResult(ok=False, "blocked_by_safety: ...")，安全拒绝对该动作是终止性的（不会被重试）。
 被拦截的 URL 记录在 WebEnv.blocked_navigations。可选 block_subresources=True 连图片/脚本等子资源一起拦。
+
+第三轮审查（web 条目 1-6）：
+1. URL：检查与真实请求共用 ``urlpolicy.normalize`` 的严格结果；反斜杠 / 控制空白 / userinfo / 百分号 authority /
+   数字·十六进制 IP 别名一律拒绝，绝不"先 replace 再比较"。Location 重定向只允许 http/https。
+2. 重定向不再拼接内联 script：用 html.escape 编码的 **meta refresh** 合成无脚本跳转页，每一跳重新进 route；
+   合成页丢掉原 3xx 上会卡住跳转的 CSP / sandbox / refresh / content-encoding / content-length 等头，
+   换成严格无脚本 CSP，并保留 Set-Cookie（多个也保留）。
+3. 手动逐跳 fetch 维护 current_url / current_method / current_body / current_headers：
+   303（HEAD 例外）、301/302 的 POST 转 GET 后清空 body 与 body 相关头，307/308 保留当前状态（不恢复原 POST）；
+   跨 origin 删除 authorization / proxy-authorization / cookie 等敏感请求头；所有异常 abort，绝不重发或按类型重试。
+4. 敏感输入：SNAPSHOT_JS / FOCUS_JS 都按 autocomplete ASCII 空白 token 与 CSS 掩码判定密码框；
+   掩码 contenteditable 的文本（含 textContent）从名字 / body 文本 / 祖先名字里整棵排除；
+   closed shadow host（或任何无法证明是原生输入目标的元素）不报告为"已知焦点"，一律保守 unknown。
+5. 表单提交目标提供稳定 DOM 身份：dom_id / form_submit_id（DOM WeakMap + 递增 uid，跨 frame 带 frame 前缀），
+   同一提交按钮的点击与文本框回车共享身份；不拿随候选排序漂移的 UIElement.id。
+6. clear / type 绑定动作开始时真实焦点元素的 handle（穿透 open shadow / iframe）；clear 或每个输入阶段焦点改变 /
+   目标消失 → 在发送秘密前返回 blocked_by_safety，绝不把焦点拉回去替用户执行；execute() 先跑 a.validate()。
 """
 from __future__ import annotations
 
+import html
 import io
-import json
 import re
 import time
 from pathlib import Path
@@ -31,44 +48,104 @@ from PIL import Image
 
 from ..actions import Action
 from ..keys import canonical_key
-from ..urlpolicy import domain_allowed
+from ..urlpolicy import UrlRejected, domain_allowed, normalize
 from .a11y import finalize, web_raws
 from .base import Env, ExecResult, Observation
 
-# 公共 JS 片段：元素命名 / 密码判定 / 表单提交按钮（快照与焦点探测共用）
+# 每次 type 复查焦点之间最多发送的字符数（输入事件可能中途移焦，不能整串无检查地交给全局 keyboard）
+_TYPE_CHUNK = 1
+
+# 公共 JS 片段：命名 / 密码判定 / 表单提交按钮 / 稳定 DOM 身份（快照与焦点探测共用）
 _JS_HELPERS = r"""
   const rootOf = (el) => el.getRootNode ? el.getRootNode() : document;
+  const PW_AUTOCOMPLETE = ['current-password', 'new-password', 'one-time-code'];
+  const secureOf = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    if ((el.getAttribute('type') || '').toLowerCase() === 'password') return true;
+    // autocomplete 按 HTML 规范的 ASCII 空白 token 匹配（section-blue current-password ... 也算）
+    const ac = (el.getAttribute('autocomplete') || '').toLowerCase().split(/[\t\n\f\r ]+/);
+    for (let i = 0; i < ac.length; i++) if (PW_AUTOCOMPLETE.indexOf(ac[i]) >= 0) return true;
+    try { const st = window.getComputedStyle(el);
+          const ts = st.webkitTextSecurity || st.getPropertyValue('-webkit-text-security');
+          if (ts && ts !== 'none') return true; } catch (e) {}
+    return false;
+  };
+  const BLOCK_TAGS = {DIV:1,P:1,BR:1,LI:1,TR:1,SECTION:1,ARTICLE:1,HEADER:1,FOOTER:1,H1:1,H2:1,H3:1,H4:1,H5:1,
+                      H6:1,TABLE:1,UL:1,OL:1,FORM:1,BLOCKQUOTE:1,PRE:1,HR:1,DL:1,DD:1,DT:1,FIGURE:1,
+                      FIGCAPTION:1,NAV:1,MAIN:1,ASIDE:1};
+  // 文本提取：整棵跳过安全子树（密码框 / CSS 掩码 / autocomplete 密码 token），
+  // 因此掩码 contenteditable 的真实 textContent 不会经名字 / body 文本 / 祖先名字泄漏。
+  const textOf = (node) => {
+    let s = '';
+    const walk = (n) => {
+      if (!n) return;
+      const kids = n.childNodes || [];
+      for (let i = 0; i < kids.length; i++) {
+        const c = kids[i];
+        if (c.nodeType === 3) { s += c.nodeValue; continue; }
+        if (c.nodeType !== 1) continue;
+        if (secureOf(c)) continue;
+        const tag = c.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue;
+        let cs = null; try { cs = window.getComputedStyle(c); } catch (e) {}
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) continue;
+        if (BLOCK_TAGS[tag]) {
+          if (s && !/\n$/.test(s)) s += '\n';
+          walk(c);
+          if (s && !/\n$/.test(s)) s += '\n';
+        } else { walk(c); }
+      }
+    };
+    walk(node);
+    return s;
+  };
   const nameOf = (el) => {
     const aria = el.getAttribute('aria-label');
     if (aria) return aria;
     const lb = el.getAttribute('aria-labelledby');
     if (lb) { const r = rootOf(el); const n = (r.getElementById ? r.getElementById(lb) : null) || document.getElementById(lb);
-              if (n) return n.innerText || n.textContent || ''; }
-    if (el.labels && el.labels.length) return el.labels[0].innerText;
+              if (n) return textOf(n); }
+    if (el.labels && el.labels.length) return textOf(el.labels[0]);
     if (el.tagName === 'INPUT' && ['submit', 'button', 'reset'].includes((el.type || '').toLowerCase()))
       return el.value || el.name || el.id || '';
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.placeholder || el.name || el.id || '';
     if (el.tagName === 'SELECT') { const o = el.options[el.selectedIndex]; return (el.name || el.id || '') + (o ? ': ' + o.text : ''); }
     if (el.tagName === 'IMG') return el.alt || '';
-    const t = (el.innerText || el.textContent || '').trim();
+    if (secureOf(el)) return el.title || '';
+    const t = textOf(el).trim();
     if (el.matches('dialog,[role=dialog],[role=alertdialog]')) return (el.getAttribute('aria-label') || t.split('\n')[0] || 'dialog');
     return t || el.title || (el.tagName === 'INPUT' ? '' : (el.value || '')) || '';
   };
-  const secureOf = (el) => {
-    if ((el.getAttribute('type') || '').toLowerCase() === 'password') return true;
-    try { const st = window.getComputedStyle(el); const ts = st.webkitTextSecurity || st.getPropertyValue('-webkit-text-security');
-          if (ts && ts !== 'none') return true; } catch (e) {}
-    return false;
+  const submitElOf = (el) => {
+    const f = el.form; if (!f) return null;
+    return f.querySelector('button:not([type]),button[type=submit],input[type=submit],input[type=image]');
   };
   const submitOf = (el) => {
-    const f = el.form; if (!f) return '';
-    const b = f.querySelector('button:not([type]),button[type=submit],input[type=submit],input[type=image]');
-    return b ? nameOf(b).slice(0, 120) : (f.getAttribute('aria-label') || '');
+    const b = submitElOf(el);
+    return b ? nameOf(b).slice(0, 120) : (el.form ? (el.form.getAttribute('aria-label') || '') : '');
+  };
+  const domIdOf = (el) => {
+    const w = window;
+    if (!w.__guaDomIds) { w.__guaDomIds = new WeakMap(); w.__guaDomSeq = 0; }
+    let id = w.__guaDomIds.get(el);
+    if (!id) { id = ++w.__guaDomSeq; w.__guaDomIds.set(el, id); }
+    return id;
+  };
+  const domId = (el, fid) => String(fid) + '-' + String(domIdOf(el));
+  const submitId = (el, fid) => { const b = submitElOf(el); return b ? domId(b, fid) : ''; };
+  // 只有能证明"键盘输入确实落到这个原生控件"的元素才算已知焦点；div / 自定义节点可能挂 closed shadow root，
+  // 无法证明输入目标 → 一律不报告为已知（见 FOCUS_JS / FOCUS_HANDLE_JS）。
+  const NATIVE_FOCUS = {INPUT:1,TEXTAREA:1,SELECT:1,BUTTON:1,OPTION:1,SUMMARY:1};
+  const isNativeFocus = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = el.tagName;
+    if (NATIVE_FOCUS[tag]) return true;
+    if ((tag === 'A' || tag === 'AREA') && el.hasAttribute('href')) return true;
+    return false;
   };
 """
 
-# 元素快照（v0.3.1：穿透 open shadow root；iframe 由 Python 逐个 frame 调用本脚本并加上 frame 偏移，
-# 同源 / 跨源 iframe 一视同仁，见 WebEnv._snapshot）
+# 元素快照（穿透 open shadow root；iframe 由 Python 逐个 frame 调用本脚本并加上 frame 偏移）
 SNAPSHOT_JS = r"""
 ([maxN, fid]) => {
 """ + _JS_HELPERS + r"""
@@ -83,7 +160,7 @@ SNAPSHOT_JS = r"""
     for (const el of r.querySelectorAll('*')) if (el.shadowRoot && el.shadowRoot.mode === 'open') roots.push(el.shadowRoot);
   }
   for (const root of roots) {
-    if (root !== document) { for (const c of root.children) { const t = (c.innerText || '').trim(); if (t) texts.push(t); } }
+    if (root !== document) { for (const c of root.children) { const t = textOf(c).trim(); if (t) texts.push(t); } }
     for (const el of root.querySelectorAll(SEL)) {
       if (out.length >= maxN) break;
       const st = window.getComputedStyle(el);
@@ -102,6 +179,7 @@ SNAPSHOT_JS = r"""
       }
       el.setAttribute('data-gua-id', fid + '-' + String(gid));
       const secure = secureOf(el);
+      const se = submitElOf(el);
       let vnow = el.getAttribute('aria-valuenow'), vmax = el.getAttribute('aria-valuemax');
       if (el.tagName === 'PROGRESS' && el.hasAttribute('value')) { vnow = String(el.value); vmax = String(el.max); }
       out.push({gid: gid++, tag: el.tagName.toLowerCase(), role: role, type: el.getAttribute('type') || '',
@@ -111,37 +189,74 @@ SNAPSHOT_JS = r"""
         checked: (el.type === 'checkbox' || el.type === 'radio') ? !!el.checked : null, covered: covered,
         href: el.getAttribute('href') || '', secure: secure, autocomplete: el.getAttribute('autocomplete') || '',
         form_submit: (el.form ? submitOf(el) : ''), busy: el.getAttribute('aria-busy') === 'true' ? 'true' : '',
+        dom_id: domId(el, fid), form_submit_id: (se ? domId(se, fid) : ''),
         valuenow: vnow, valuemax: vmax});
     }
   }
-  return {items: out, text: (document.body ? document.body.innerText : '').slice(0, 6000),
+  return {items: out, text: (document.body ? textOf(document.body) : '').slice(0, 6000),
           shadow_text: texts.join('\n').slice(0, 2000),
           title: document.title, url: location.href, vw: vw, vh: vh};
 }
 """
 
-# 安全焦点探测（v0.3.1，第二轮条目 4）：沿 activeElement 穿透 open shadow root；落在 iframe 上时给它打标记，
-# 由 Python 找到对应的子 frame 继续探测（跨源 frame 也可以，Playwright 有特权访问）。与候选元素数量上限无关。
+# 安全焦点探测：沿 activeElement 穿透 open shadow root；落在 iframe 上时给它打标记，
+# 由 Python 找到对应的子 frame 继续探测（跨源 frame 也可以，Playwright 有特权访问）。
+# 只有原生输入目标才报告 kind=element；div / 自定义节点（可能挂 closed shadow root）→ kind=unknown。
 FOCUS_JS = r"""
-(token) => {
+([token, fid]) => {
 """ + _JS_HELPERS + r"""
   let a = document.activeElement;
   while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
   if (!a || a === document.body || a === document.documentElement) return {kind: 'none'};
   if (a.tagName === 'IFRAME' || a.tagName === 'FRAME') { a.setAttribute('data-gua-focus-frame', token); return {kind: 'frame'}; }
+  if (!isNativeFocus(a)) return {kind: 'unknown'};
   const r = a.getBoundingClientRect();
   return {kind: 'element', tag: a.tagName.toLowerCase(), role: a.getAttribute('role') || '',
           type: a.getAttribute('type') || '', name: nameOf(a).slice(0, 120), secure: secureOf(a),
           autocomplete: a.getAttribute('autocomplete') || '', form_submit: submitOf(a),
+          dom_id: domId(a, fid), form_submit_id: submitId(a, fid),
           rect: [r.left, r.top, r.right, r.bottom], disabled: !!a.disabled, editable: !!a.isContentEditable};
+}
+"""
+
+# clear / type 的绑定目标：返回 activeElement 的元素句柄；iframe 打标记走子 frame；非原生目标返回 null。
+FOCUS_HANDLE_JS = r"""
+(token) => {
+""" + _JS_HELPERS + r"""
+  let a = document.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+  if (!a || a === document.body || a === document.documentElement) return null;
+  if (a.tagName === 'IFRAME' || a.tagName === 'FRAME') { a.setAttribute('data-gua-focus-frame', token); return null; }
+  if (!isNativeFocus(a)) return null;
+  return a;
 }
 """
 
 FRAME_OFFSET_JS = r"""(e) => { const cs = window.getComputedStyle(e);
   return [e.clientLeft + (parseFloat(cs.paddingLeft) || 0), e.clientTop + (parseFloat(cs.paddingTop) || 0)]; }"""
 
-REDIRECT_HTML = """<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">
-<title>redirect</title><script>location.replace({target});</script>"""
+
+def redirect_html(target: str) -> str:
+    """无脚本跳转页：meta refresh（目标用 html.escape 正确编码），不拼接任何内联 script。"""
+    return ('<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+            '<title>redirect</title>'
+            '<meta http-equiv="refresh" content="0; url=' + html.escape(target, quote=True) + '">')
+
+
+def _next_method(status: int, method: str) -> str:
+    """重定向后的方法（RFC 9110）：303 → GET（HEAD 例外仍 HEAD）；301/302 的 POST → GET；307/308 不变。"""
+    if status == 303:
+        return "HEAD" if method == "HEAD" else "GET"
+    if status in (301, 302) and method == "POST":
+        return "GET"
+    return method
+
+
+def _origin(url: str) -> tuple:
+    u = urlparse(url)
+    port = u.port or (443 if u.scheme == "https" else 80)
+    return (u.scheme, (u.hostname or "").lower(), port)
+
 
 _KEYMAP = {"ctrl": "Control", "control": "Control", "cmd": "Meta", "command": "Meta", "win": "Meta", "insert": "Insert",
            "meta": "Meta", "alt": "Alt", "option": "Alt", "shift": "Shift", "enter": "Enter",
@@ -149,6 +264,19 @@ _KEYMAP = {"ctrl": "Control", "control": "Control", "cmd": "Meta", "command": "M
            "delete": "Delete", "del": "Delete", "space": "Space", "up": "ArrowUp", "down": "ArrowDown",
            "left": "ArrowLeft", "right": "ArrowRight", "pageup": "PageUp", "pagedown": "PageDown",
            "home": "Home", "end": "End"}
+
+# 合成跳转页必须丢掉的响应头：会卡住 / 干扰跳转的原 3xx 头（CSP / sandbox / refresh / 长度 / 编码等）。
+# 真正的目标页 CSP 不受影响（只处理中间跳转页）。
+_REDIRECT_DROP = frozenset({
+    "location", "content-length", "content-type", "content-encoding", "transfer-encoding",
+    "content-security-policy", "content-security-policy-report-only", "x-frame-options", "refresh",
+    "clear-site-data",
+})
+# 严格无脚本 CSP；frame-ancestors * 明确不禁用合法的 iframe 跳转。
+_REDIRECT_CSP = ("default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; "
+                 "form-action 'none'; frame-ancestors *")
+_SENSITIVE_REQUEST_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie"})
+_BODY_HEADERS = frozenset({"content-type", "content-length", "content-encoding", "transfer-encoding"})
 
 
 def pw_key(k: str) -> str:
@@ -202,6 +330,8 @@ class WebEnv(Env):
         self.max_redirect_hops = max_redirect_hops
         self.safety_failures: list[str] = []         # 白名单检查本身失败（预取异常、处理器异常）→ 已 fail-closed 拦截
         self._hops = 0                               # 连续客户端重定向跳数（防重定向环）
+        self._last_focus_secure: bool = False
+        self._last_focus_dom_id: Optional[str] = None
 
     # ---------------------------------------------------------------- 生命周期
     def _ensure(self) -> None:
@@ -236,13 +366,11 @@ class WebEnv(Env):
         self._record_block(url, f"safety check failed, request aborted: {why}", page)
 
     def _fetch(self, route, **kw):
-        try:
-            return route.fetch(max_redirects=0, timeout=self.fetch_timeout * 1000, **kw)
-        except TypeError:           # 旧版 Playwright 没有 timeout 参数
-            return route.fetch(max_redirects=0, **kw)
+        """route.fetch 返回 APIResponse（不是 Response）。任何异常都在调用处 abort，绝不重发 / 按类型重试。"""
+        return route.fetch(max_redirects=0, timeout=self.fetch_timeout * 1000, **kw)
 
     def _route(self, route) -> None:
-        """浏览器层白名单（v0.3.1：任何异常都 fail-closed——abort 并记录安全失败，绝不 continue_）。"""
+        """浏览器层白名单（任何异常都 fail-closed——abort 并记录安全失败，绝不 continue_）。"""
         url = "?"
         try:
             url = route.request.url
@@ -254,9 +382,28 @@ class WebEnv(Env):
             except Exception:  # noqa: BLE001
                 pass
 
+    @staticmethod
+    def _request_headers(req) -> Optional[dict]:
+        """当前请求头（小写名）。取不到（测试替身 / 已分离）返回 None。"""
+        try:
+            h = req.headers
+            return {str(k).lower(): str(v) for k, v in dict(h).items()}
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _passthrough_headers(self, resp) -> dict:
+        """原 3xx 响应头 → 合成跳转页头：丢掉会卡住跳转的头（含 CSP / sandbox / refresh / 长度编码），保留其余（含多个 Set-Cookie）。"""
+        out: dict = {}
+        for k, v in resp.headers.items():
+            name = str(k).lower()
+            if name in _REDIRECT_DROP:
+                continue
+            out[name] = str(v)
+        return out
+
     def _route_inner(self, route) -> None:
         req = route.request
-        url = req.url
+        raw_url = req.url
         try:
             page = req.frame.page
         except Exception:
@@ -265,9 +412,18 @@ class WebEnv(Env):
             nav = req.is_navigation_request()
         except Exception:         # 判断不了是不是导航：按导航处理（保守）
             nav = True
-        if not domain_allowed(url, self.allowed_domains):
+        if not domain_allowed(raw_url, self.allowed_domains):
             if nav or self.block_subresources:
-                self._record_block(url, "navigation to host outside allowlist" if nav else "subresource", page)
+                self._record_block(raw_url, "navigation to host outside allowlist" if nav else "subresource", page)
+                route.abort("blockedbyclient")
+            else:
+                route.continue_()
+            return
+        try:
+            url = normalize(raw_url)               # 检查与真实请求共用同一个规范化 URL
+        except UrlRejected as e:
+            if nav or self.block_subresources:
+                self._record_block(raw_url, f"ambiguous url: {e}", page)
                 route.abort("blockedbyclient")
             else:
                 route.continue_()
@@ -275,6 +431,12 @@ class WebEnv(Env):
         if not (nav or self.block_subresources) or urlparse(url).scheme not in {"http", "https"}:
             route.continue_()
             return
+        method = (getattr(req, "method", "GET") or "GET").upper()
+        try:
+            body = req.post_data_buffer if method not in ("GET", "HEAD") else None
+        except Exception:  # noqa: BLE001
+            body = None
+        headers = self._request_headers(req)
         # 先取响应、不跟随重定向（请求只发送这一次：之后用 fulfill 交给浏览器，不再 continue_）
         try:
             resp = self._fetch(route)
@@ -283,43 +445,55 @@ class WebEnv(Env):
             route.abort("blockedbyclient")
             return
         hops = 0
-        method = (getattr(req, "method", "GET") or "GET").upper()
         while 300 <= resp.status < 400:
             loc = resp.headers.get("location", "")
-            target = urljoin(url, loc) if loc else ""
-            if not target:
+            if not loc:
                 break
+            joined = urljoin(url, loc)
+            try:
+                target = normalize(joined, allow_local=False)   # Location 只允许 http/https（默认无白名单也不insert javascript）
+            except UrlRejected as e:
+                self._record_block(joined, f"redirect Location rejected ({e})", page)
+                route.abort("blockedbyclient")
+                return
             if not domain_allowed(target, self.allowed_domains):
                 self._record_block(target, f"redirect from {url}", page)
                 route.abort("blockedbyclient")
                 return
-            keep_method = resp.status in (307, 308) and method != "GET"
-            if nav and not keep_method:
-                # Playwright 不会拦截浏览器自己跟随的重定向（v0.3 多跳重定向因此可绕过）：改成客户端跳转，
-                # 下一跳是一个新的导航请求，会再次进入本处理器逐跳检查；原响应头（含 Set-Cookie）保留。
+            new_method = _next_method(resp.status, method)
+            if nav and (method in ("GET", "HEAD") or new_method != method):
+                # 导航：改成客户端 meta refresh（无脚本），下一跳是新的导航请求，会再次进入本处理器逐跳检查；
+                # 原响应头（含 Set-Cookie）按 Playwright 约定保留，去掉会卡住跳转的头。
                 self._hops += 1
                 if self._hops > self.max_redirect_hops:
                     self._safety_fail(target, f"more than {self.max_redirect_hops} redirect hops", page)
                     route.abort("blockedbyclient")
                     return
-                headers = {k: v for k, v in resp.headers.items()
-                           if k.lower() not in {"location", "content-length", "content-type", "content-encoding",
-                                                "transfer-encoding"}}
-                route.fulfill(status=200, headers=headers, content_type="text/html; charset=utf-8",
-                              body=REDIRECT_HTML.format(target=json.dumps(target)))
+                headers_out = self._passthrough_headers(resp)
+                headers_out["content-type"] = "text/html; charset=utf-8"
+                headers_out["content-security-policy"] = _REDIRECT_CSP
+                route.fulfill(status=200, headers=headers_out, body=redirect_html(target))
                 return
-            # 子资源 / 307·308 非 GET：在这里逐跳跟随（每跳检查白名单），最后把最终响应交给浏览器
+            # 子资源 / 307·308 非 GET：在这里逐跳跟随（每跳检查白名单 / 方法 / 请求头），最后把最终响应交给浏览器
             hops += 1
             if hops > self.max_redirect_hops:
                 self._safety_fail(target, f"more than {self.max_redirect_hops} redirect hops", page)
                 route.abort("blockedbyclient")
                 return
+            if headers is not None and _origin(target) != _origin(url):
+                headers = {k: v for k, v in headers.items() if k not in _SENSITIVE_REQUEST_HEADERS}
+            if method != new_method:            # POST→GET（303 / 301 / 302）：清空 body 与 body 相关头
+                body = None
+                if headers is not None:
+                    headers = {k: v for k, v in headers.items() if k not in _BODY_HEADERS}
+            method = new_method
+            kw: dict = {"url": target, "method": method}
+            kw["post_data"] = "" if method in ("GET", "HEAD") else (body or "")
+            if headers:
+                kw["headers"] = headers
+            elif headers is not None:
+                kw["headers"] = {"accept": "*/*"}   # 空也不能回退到原请求头（否则会带出刚删掉的敏感头）
             try:
-                kw = {"url": target}
-                if keep_method:
-                    kw.update(method=method, post_data=req.post_data_buffer)
-                else:
-                    kw.update(method="GET")
                 resp = self._fetch(route, **kw)
             except Exception as e:  # noqa: BLE001
                 self._safety_fail(target, f"redirect hop fetch failed ({type(e).__name__})", page)
@@ -328,7 +502,13 @@ class WebEnv(Env):
             url = target
         if nav:
             self._hops = 0
-        route.fulfill(response=resp)
+        if urlparse(req.url).netloc != urlparse(url).netloc:
+            # 跨源重定向：剥离 origin 作用域响应头（Set-Cookie / Clear-Site-Data），防跨源 Cookie 注入
+            headers = {k: v for k, v in resp.headers.items() if k.lower() not in {"set-cookie", "clear-site-data"}}
+            body = resp.body() if callable(getattr(resp, "body", None)) else b""
+            route.fulfill(status=resp.status, headers=headers, body=body)
+        else:
+            route.fulfill(response=resp)
 
     def _remember_good(self) -> None:
         try:
@@ -375,7 +555,7 @@ class WebEnv(Env):
                     ok = True
                 except Exception:  # noqa: BLE001
                     pass
-            if not ok:            # v0.3.1：回不到合法页面也不能停在白名单外 → about:blank（fail-closed）
+            if not ok:            # 回不到合法页面也不能停在白名单外 → about:blank（fail-closed）
                 try:
                     self.page.goto("about:blank")
                 except Exception:  # noqa: BLE001
@@ -447,8 +627,15 @@ class WebEnv(Env):
             texts += [x for x in (snap.get("text", ""), snap.get("shadow_text", "")) if x]
         return items, "\n".join(texts)[:8000]
 
-    def _probe_frame(self, frame, token: str) -> dict:
-        return frame.evaluate(FOCUS_JS, token)
+    def _probe_frame(self, frame, token: str, fid: int = 0) -> dict:
+        return frame.evaluate(FOCUS_JS, [token, fid])
+
+    @staticmethod
+    def _frame_index(pg, frame) -> int:
+        try:
+            return list(pg.frames).index(frame)
+        except ValueError:
+            return 0
 
     def _probe_focus(self, pg) -> tuple[Optional[dict], str]:
         """安全焦点探测：返回 (焦点元素描述或 None, "known" | "none" | "unknown")。任何异常 → unknown。"""
@@ -456,7 +643,7 @@ class WebEnv(Env):
             frame, off = pg.main_frame, (0.0, 0.0)
             for _ in range(10):
                 token = f"f{time.time_ns()}"
-                info = self._probe_frame(frame, token)
+                info = self._probe_frame(frame, token, self._frame_index(pg, frame))
                 kind = (info or {}).get("kind")
                 if kind == "none":
                     return None, "none"
@@ -483,6 +670,60 @@ class WebEnv(Env):
             return None, "unknown"
         except Exception:  # noqa: BLE001
             return None, "unknown"
+
+    def _focus_handle(self, pg):
+        """动作开始时真实焦点元素的句柄（穿透 open shadow root 与 iframe）。
+
+        返回 (frame, ElementHandle)；非原生输入目标（可能是 closed shadow host）或没有焦点 → (None, None)。
+        """
+        try:
+            frame = pg.main_frame
+            for _ in range(10):
+                token = f"h{time.time_ns()}"
+                handle = frame.evaluate_handle(FOCUS_HANDLE_JS, token)
+                el = handle.as_element()
+                if el is not None:
+                    return frame, el
+                child = None
+                for ch in frame.child_frames:
+                    try:
+                        if ch.frame_element().get_attribute("data-gua-focus-frame") == token:
+                            child = ch
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if child is None:
+                    return None, None
+                frame = child
+            return None, None
+        except Exception:  # noqa: BLE001
+            return None, None
+
+    @staticmethod
+    def _handle_focused(handle) -> bool:
+        """元素句柄现在还持有键盘焦点吗（open shadow root 内也算）。任何异常 → False（保守）。"""
+        try:
+            return bool(handle.evaluate(
+                "(el) => { try { if (!el.isConnected) return false;"
+                " const r = el.getRootNode ? el.getRootNode() : document;"
+                " const a = (r && r.activeElement !== undefined) ? r.activeElement : document.activeElement;"
+                " return a === el; } catch (e) { return false; } }"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _attach_dom_ids(elems: list, items: list) -> None:
+        """把 raw 里的稳定 DOM 身份（dom_id / form_submit_id）传播到 UIElement.attrs
+        （与 a11y 组 web_raws 的透传契约一致；这里再兜一次，保证提交目标身份可用）。"""
+        by_gid = {(it.get("frame") or "0", it.get("gid")): it for it in items}
+        for e in elems:
+            it = by_gid.get((e.attrs.get("frame") or "0", e.attrs.get("gid")))
+            if not it:
+                continue
+            if it.get("dom_id"):
+                e.attrs["dom_id"] = it["dom_id"]
+            if it.get("form_submit_id"):
+                e.attrs["form_submit_id"] = it["form_submit_id"]
 
     @staticmethod
     def _apply_focus(elems: list, info: Optional[dict], img_size) -> None:
@@ -514,6 +755,9 @@ class WebEnv(Env):
             match.value = None
         if raw["attrs"].get("form_submit"):
             match.attrs["form_submit"] = raw["attrs"]["form_submit"]
+        for key in ("dom_id", "form_submit_id"):     # 稳定 DOM 身份（审查条目 5）
+            if info.get(key):
+                match.attrs[key] = info[key]
 
     def observe(self, with_elements: bool = True) -> Observation:
         self._ensure()
@@ -534,10 +778,13 @@ class WebEnv(Env):
                     if it.get("covered"):
                         r["attrs"]["covered"] = "true"
                 elems, _ = finalize(raws, img.size, self.max_elements, include_text=False)
+                self._attach_dom_ids(elems, items)
             except Exception as e:  # 页面跳转中
                 text = f"(snapshot failed: {type(e).__name__})"
             info, focus_state = self._probe_focus(pg)
             self._apply_focus(elems, info, img.size)
+            self._last_focus_secure = bool(info.get("secure")) if isinstance(info, dict) else False
+            self._last_focus_dom_id = info.get("dom_id") if isinstance(info, dict) else None
         wins = []
         for p in self._ctx.pages:
             try:
@@ -554,6 +801,11 @@ class WebEnv(Env):
         return domain_allowed(url, self.allowed_domains)
 
     def execute(self, a: Action) -> ExecResult:
+        try:
+            a.validate()        # 安全组会把 hotkey 等收窄；直接调用 Env 也不能绕过
+        except Exception as e:  # noqa: BLE001
+            return ExecResult(False, f"invalid_action: {type(e).__name__}: {str(e)[:160]}",
+                              time.time(), time.time())
         r = self._execute(a)
         if a.x is not None and a.y is not None and a.is_pointer:
             self.cursor = (int(a.x2), int(a.y2)) if a.type == "drag" and a.x2 is not None else (int(a.x), int(a.y))
@@ -570,6 +822,43 @@ class WebEnv(Env):
                                   r.started, time.time())
         return r
 
+    def _do_type(self, pg, a: Action, t0: float) -> ExecResult:
+        """clear / type：绑定动作开始时真实焦点元素的 handle（穿透 open shadow / iframe），
+        clear 与每个输入阶段都复查焦点仍是它；焦点改变 / 目标消失 → 发送秘密前返回 blocked_by_safety，
+        绝不把焦点拉回去替用户执行，也不整串无检查地交给全局 keyboard。"""
+        frame, handle = self._focus_handle(pg)
+        if handle is None:
+            return ExecResult(False, "blocked_by_safety: keyboard focus target could not be bound",
+                              t0, time.time())
+        if self._last_focus_secure:
+            try:
+                is_secure = bool(handle.evaluate("el => { " + _JS_HELPERS + " return secureOf(el); }"))
+                if not is_secure:
+                    return ExecResult(False, "blocked_by_safety: focus target changed from secure element before typing",
+                                      t0, time.time())
+            except Exception:
+                return ExecResult(False, "blocked_by_safety: focus target security could not be verified",
+                                  t0, time.time())
+        kb = pg.keyboard
+        try:
+            if a.clear:
+                kb.press("Control+A")
+                kb.press("Backspace")
+                if not self._handle_focused(handle):
+                    return ExecResult(False, "blocked_by_safety: focus changed during clear", t0, time.time())
+            text = a.text or ""
+            for i in range(0, len(text), _TYPE_CHUNK):
+                kb.type(text[i:i + _TYPE_CHUNK], delay=5)
+                if not self._handle_focused(handle):
+                    return ExecResult(False, "blocked_by_safety: focus changed while typing", t0, time.time())
+            if a.submit:
+                if not self._handle_focused(handle):
+                    return ExecResult(False, "blocked_by_safety: focus changed before submit", t0, time.time())
+                kb.press("Enter")
+            return ExecResult(True, "", t0, time.time())
+        except Exception as e:  # noqa: BLE001
+            return ExecResult(False, f"{type(e).__name__}: {str(e)[:200]}", t0, time.time())
+
     def _execute(self, a: Action) -> ExecResult:
         self._ensure()
         t0 = time.time()
@@ -580,6 +869,8 @@ class WebEnv(Env):
         err = self._bounds_error(a, w, h)
         if err:
             return ExecResult(False, err, t0, time.time())
+        if a.type == "type":
+            return self._do_type(pg, a, t0)
         try:
             m, kb = pg.mouse, pg.keyboard
             if a.type == "click":
@@ -602,13 +893,6 @@ class WebEnv(Env):
                 dx, dy = {"up": (0, -d), "down": (0, d), "left": (-d, 0), "right": (d, 0)}[a.direction]
                 m.wheel(dx, dy)
                 time.sleep(0.2)
-            elif a.type == "type":
-                if a.clear:
-                    kb.press("Control+A")
-                    kb.press("Backspace")
-                kb.type(a.text or "", delay=5)
-                if a.submit:
-                    kb.press("Enter")
             elif a.type == "hotkey":
                 kb.press("+".join(pw_key(k) for k in a.keys))
             elif a.type == "key_down":
@@ -621,6 +905,10 @@ class WebEnv(Env):
                 time.sleep(min(a.seconds or 1.0, 10.0))
             elif a.type == "navigate":
                 url = to_url(a.url or a.text or "")
+                try:
+                    url = normalize(url)
+                except UrlRejected as e:
+                    return ExecResult(False, f"blocked_by_safety invalid url: {e}", t0, time.time())
                 if not self._domain_ok(url):
                     return ExecResult(False, f"blocked_by_safety domain not allowed: {url}", t0, time.time())
                 pg.goto(url)

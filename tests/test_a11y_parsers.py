@@ -4,7 +4,7 @@ import json
 from conftest import FIX
 from gua.env.a11y import (android_xml_to_elements, atspi_tree_to_elements, ax_tree_to_elements, finalize,
                           parse_android_bounds, web_raws, web_role)
-from gua.env.base import INTERACTIVE_ROLES
+from gua.env.base import INTERACTIVE_ROLES, SAFE_PASSWORD_NAME
 
 
 def by_name(els, name):
@@ -54,7 +54,8 @@ def test_ax_tree_retina_scale():
     assert by_name(els, "Helvetica").role == "combobox"
     assert by_name(els, "Save dialog").role == "dialog"
     assert not by_name(els, "Cancel").enabled
-    pw = by_name(els, "Password")
+    pw = next(e for e in els if e.is_password)
+    assert pw.name == SAFE_PASSWORD_NAME and pw.value is None
     assert pw.attrs.get("password") == "true" and pw.rect == (440, 400, 840, 444)
     assert by_name(els, "document body").value == "hello"
     assert "Words: 1" in text

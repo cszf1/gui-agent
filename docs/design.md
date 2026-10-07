@@ -4,6 +4,9 @@
 > ②任务收尾核验总是运行，只有明确 success 才算完成，uncertain 不算；③预算在模型调用边界硬性执行（`budget_exhausted`）；
 > ④各组件读取同一个 `CapabilityPolicy`（`gua/policy.py`）。坐标换算改为 `ImageTransform` 变换链。
 
+> 当前工作树进一步收紧：秘密先展开再过闸；模型请求由统一出口清洗；发现敏感数据后不再发送/保存截图，
+> 必须依赖视觉的路径返回 `privacy_blocked`。复合移焦/激活不能塞入单个 hotkey；完成证据不再以全局画面变化刷新。
+
 > v0.1（win-gui-agent / `wga`）只支持 Windows。v0.2 把同一套验证-恢复核心推广到 6 个后端；调研与取舍见 [research.md](research.md)。
 
 ## 1. 研究问题
@@ -98,5 +101,5 @@ Planner ──subgoals(expected, evidence, expect_text)──▶ 每个子目标
 - Android 非 ASCII 输入需要 ADBKeyboard；Linux 仅支持 X11；macOS 需要“辅助功能 + 屏幕录制”权限
 - 未实现：MCP 工具通道、代码动作、推测式多动作、OmniParser 视觉检测（见 research.md 第 4 节）
 - 视觉验证器本身需要单独标注和评测（Microsoft 关于 CUA verifier 的研究提醒）
-- v0.3.1：敏感输入的脱敏 / 确认只依据“输入目标”（gua/sensitive.py）；桌面与 Android 的焦点只来自无障碍树，没有 Web 那样的独立焦点探测；
-  Scrubber 只能清洗已知秘密，推荐用 `AgentConfig.secrets` 占位符让模型看不到原文（详见 README“已知限制”与 docs/review-fixes.md 第二轮）
+- 敏感输入分类与已知秘密清洗共同保护输出；桌面与 Android 焦点仍依赖无障碍树。`AgentConfig.secrets` 从首次请求前登记，
+  运行中的未知秘密不能靠字符串替换自动识别；敏感状态后的截图一律不发送/保存，纯视觉能力因此可能被终止。详见 README“已知限制”与 review-fixes.md 第三轮。

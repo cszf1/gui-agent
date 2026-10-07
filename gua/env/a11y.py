@@ -18,7 +18,12 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any, Iterable, Optional
 
-from .base import INTERACTIVE_ROLES, UIElement
+from .base import INTERACTIVE_ROLES, SAFE_PASSWORD_NAME, UIElement
+
+# 密码元素 attrs 中可能夹带内容副本的键：公共序列化层对密码元素一律剔除这些键（不剔 password / type /
+# resource-id 等身份属性，安全闸门仍需要它们）。v0.3.1 审查条目 2 / 3。
+SENSITIVE_ATTR_KEYS = frozenset({"value", "text", "content", "content-desc", "content_desc", "axvalue",
+                                 "ax_title", "ax_description", "ax_help", "label", "secret"})
 
 # ---------------------------------------------------------------- 角色映射
 ANDROID_ROLE = [
@@ -105,7 +110,9 @@ def uia_raw(ctrl: Any, offset: tuple[int, int] = (0, 0)) -> Optional[dict[str, A
         except Exception:
             pass
     aid = getattr(ctrl, "AutomationId", "") or ""
-    return {"name": ctrl.Name or "", "role": role, "native_role": native,
+    # v0.3.1（条目 2）：密码控件的 UIA Name 可能夹带明文，改用固定安全名称（AutomationId 作为非内容属性保留）
+    nm = SAFE_PASSWORD_NAME if is_pw else (ctrl.Name or "")
+    return {"name": nm, "role": role, "native_role": native,
             "rect": (r.left - ox, r.top - oy, r.right - ox, r.bottom - oy),
             "enabled": bool(ctrl.IsEnabled), "focused": bool(ctrl.HasKeyboardFocus),
             "value": val, "checked": checked, "is_password": is_pw,
@@ -161,8 +168,11 @@ def finalize(raws: Iterable[dict[str, Any]], screen: tuple[int, int], max_elemen
         l, t, rr, b = (int(round(v)) for v in r["rect"])
         if rr - l < min_size or b - t < min_size:
             continue
-        name = re.sub(r"\s+", " ", str(r.get("name") or "")).strip()[:100]
         is_pw = bool(r.get("is_password")) or (r.get("attrs") or {}).get("password") == "true"
+        # v0.3.1（条目 2 / 3）：密码元素不保留不可信 name（Android content-desc、AXTitle、UIA / AT-SPI name……），
+        # 统一换成固定安全名称；非密码元素名字照旧。
+        name = SAFE_PASSWORD_NAME if is_pw else \
+            re.sub(r"\s+", " ", str(r.get("name") or "")).strip()[:100]
         value = r.get("value")
         value = None if value in (None, "") or is_pw else str(value)[:100]   # v0.3.1：密码值在公共层清空
         role = r.get("role", "other")
@@ -190,7 +200,8 @@ def finalize(raws: Iterable[dict[str, Any]], screen: tuple[int, int], max_elemen
                     if r2.get("focused"):
                         l2, t2, r2r, b2 = (int(round(v)) for v in r2["rect"])
                         pw2 = bool(r2.get("is_password")) or (r2.get("attrs") or {}).get("password") == "true"
-                        nm2 = re.sub(r"\s+", " ", str(r2.get("name") or "")).strip()[:100]
+                        nm2 = SAFE_PASSWORD_NAME if pw2 else \
+                            re.sub(r"\s+", " ", str(r2.get("name") or "")).strip()[:100]
                         v2 = r2.get("value")
                         v2 = None if v2 in (None, "") or pw2 else str(v2)[:100]
                         off2 = r2r <= 0 or b2 <= 0 or l2 >= sw or t2 >= sh
@@ -201,10 +212,19 @@ def finalize(raws: Iterable[dict[str, Any]], screen: tuple[int, int], max_elemen
     return out, "\n".join(dict.fromkeys(texts))
 
 
+def _safe_attrs(is_pw: bool, attrs: Any) -> dict:
+    """密码元素的 attrs 去掉可能夹带内容副本的键；身份属性（password / type / resource-id……）保留。"""
+    a = dict(attrs or {})
+    if not is_pw:
+        return a
+    return {k: v for k, v in a.items() if str(k).lower() not in SENSITIVE_ATTR_KEYS}
+
+
 def _mk(i, r, name, role, rect, focused, value, off, is_pw) -> UIElement:
     return UIElement(id=i, name=name, role=role, rect=rect, enabled=bool(r.get("enabled", True)),
                      focused=focused, value=value, checked=r.get("checked"), offscreen=off,
-                     native_role=str(r.get("native_role", "")), attrs=dict(r.get("attrs") or {}), is_password=is_pw)
+                     native_role=str(r.get("native_role", "")), attrs=_safe_attrs(is_pw, r.get("attrs")),
+                     is_password=is_pw)
 
 
 # ---------------------------------------------------------------- Android
@@ -224,17 +244,23 @@ def android_raws(xml: str) -> list[dict[str, Any]]:
 
     def desc_text(node) -> str:
         """可点击容器（如设置列表项）本身没有文字时，用子孙节点的文字命名（前两段）。
-        v0.3.1：密码子节点的 text 是明文，不用来命名父容器。"""
-        parts = []
-        for c in node.iter("node"):
-            if c is node:
-                continue
-            t = (c.attrib.get("content-desc") if c.attrib.get("password") == "true"
-                 else c.attrib.get("text") or c.attrib.get("content-desc"))
-            if t:
-                parts.append(t)
-            if len(parts) >= 2:
-                break
+        v0.3.1（条目 2）：密码子树整体跳过（text / content-desc 都可能夹带明文），不只是密码节点自己的 text。"""
+        parts: list[str] = []
+
+        def walk(n) -> None:
+            for c in n:
+                if len(parts) >= 2:
+                    return
+                if c.tag != "node" or c.attrib.get("password") == "true":
+                    continue
+                t = c.attrib.get("text") or c.attrib.get("content-desc")
+                if t:
+                    parts.append(t)
+                    if len(parts) >= 2:
+                        return
+                walk(c)
+
+        walk(node)
         return " | ".join(parts)
 
     for n in root.iter("node"):
@@ -251,10 +277,12 @@ def android_raws(xml: str) -> list[dict[str, Any]]:
         rid = a.get("resource-id", "")
         is_edit = role == "textbox"
         is_pw = a.get("password") == "true"
-        if is_pw:          # v0.3.1：密码节点的 text 就是明文（或掩码），名字绝不回退到 text，value 清空
-            text = ""
-        name = (desc if is_edit and desc else "") or text or desc or (desc_text(n) if clickable and not is_pw else "") \
-            or (rid.split("/")[-1] if rid else "") or ("password field" if is_pw else "")
+        if is_pw:
+            # v0.3.1（条目 2）：密码节点的 text / content-desc 都可能夹带明文，名字绝不用它们（也不回退 resource-id）
+            text = desc = ""
+        name = SAFE_PASSWORD_NAME if is_pw else \
+            ((desc if is_edit and desc else "") or text or desc or
+             (desc_text(n) if clickable else "") or (rid.split("/")[-1] if rid else ""))
         raws.append({
             "name": name, "role": role, "native_role": cls, "rect": rect,
             "enabled": a.get("enabled", "true") == "true", "focused": a.get("focused") == "true",
@@ -286,8 +314,11 @@ def atspi_raws(node: dict[str, Any], scale: float = 1.0, depth: int = 0, max_dep
         native = str(node.get("role", "")).lower()
         role = ATSPI_ROLE.get(native, "other")
         is_pw = native == "password text" or "password" in states   # v0.3.1：AT-SPI 也可能用状态标记
-        name = node.get("name") or (node.get("text") if role == "text" and not is_pw else "") or \
-            ("password field" if is_pw else "text field" if role == "textbox" else "")
+        if is_pw:          # 条目 2：AT-SPI name / text 都可能夹带明文，改用固定安全名称
+            name = SAFE_PASSWORD_NAME
+        else:
+            name = node.get("name") or (node.get("text") if role == "text" else "") or \
+                ("text field" if role == "textbox" else "")
         interactive = role in INTERACTIVE_ROLES
         out.append({
             "name": name, "role": role, "native_role": native,
@@ -323,10 +354,12 @@ def ax_raws(node: dict[str, Any], scale: float = 1.0, depth: int = 0, max_depth:
         role = ax_role(native, subrole)
         secure = native == "AXSecureTextField" or subrole == "AXSecureTextField"
         val = node.get("AXValue")
-        if secure:          # v0.3.1：安全输入框的 AXValue 不读取（名字也不能回退到它）
-            val = None
-        name = node.get("AXTitle") or node.get("AXDescription") or node.get("AXHelp") or \
-            (val if role == "text" and isinstance(val, str) else "") or ("secure text field" if secure else "")
+        if secure:          # v0.3.1（条目 2 / 6）：安全输入框的 AXValue / AXTitle / AXDescription / AXHelp
+            val = None      # 都可能夹带明文，一律不采用，改用固定安全名称
+            name = SAFE_PASSWORD_NAME
+        else:
+            name = node.get("AXTitle") or node.get("AXDescription") or node.get("AXHelp") or \
+                (val if role == "text" and isinstance(val, str) else "")
         checked = None
         if role in {"checkbox", "radio", "switch"} and val is not None:
             checked = bool(int(val)) if str(val).isdigit() else bool(val)
@@ -349,26 +382,44 @@ def ax_tree_to_elements(tree: dict, screen: tuple[int, int], scale: float = 1.0,
 
 # ---------------------------------------------------------------- Web DOM 快照
 PASSWORD_AUTOCOMPLETE = {"current-password", "new-password", "one-time-code"}
+# HTML autocomplete 是「按 ASCII 空白分隔的 token 列表」：整串命中不够，要逐 token 判断（v0.3.1 条目 1）
+_ASCII_WS = re.compile(r"[ \t\n\r\f\v]+")
+
+
+def autocomplete_has_password_token(value: Any) -> bool:
+    """autocomplete 是否含 current-password / new-password / one-time-code 任一 token（不扩大信用卡范围）。"""
+    return bool({t for t in _ASCII_WS.split(str(value or "").strip().lower()) if t} & PASSWORD_AUTOCOMPLETE)
+
 
 def web_raws(items: list[dict[str, Any]]) -> list[dict]:
     """items 来自 env/web.py 的 JS：{tag, role, type, name, value, rect:[l,t,r,b], disabled, focused, checked, gid}"""
     out = []
     for it in items:
         role = web_role(it.get("tag", ""), it.get("role", ""), it.get("type", ""))
-        # v0.3.1：type=password、autocomplete=current-password/new-password/one-time-code、
-        # CSS -webkit-text-security 掩码（JS 报告 secure=true）都算密码框
-        is_pw = str(it.get("type") or "").lower() == "password" or bool(it.get("secure")) or \
-            str(it.get("autocomplete") or "").lower() in PASSWORD_AUTOCOMPLETE
+        # v0.3.1（条目 1）：原始 secure（CSS -webkit-text-security 掩码等）优先级最高；否则看
+        # type=password，或 autocomplete token 列表命中 current-password / new-password / one-time-code
+        if it.get("secure"):
+            is_pw = True
+        else:
+            is_pw = str(it.get("type") or "").lower() == "password" or \
+                autocomplete_has_password_token(it.get("autocomplete"))
+        # dom_id / form_submit_id 只作安全身份（Web / Safety 约定），与旧 form_submit 一起透传，不进模型 brief
+        attrs = {}
+        for k, v in (("gid", it.get("gid")), ("dom_id", it.get("dom_id")),
+                     ("form_submit_id", it.get("form_submit_id")), ("type", it.get("type")),
+                     ("href", it.get("href")), ("frame", it.get("frame")),
+                     ("form_submit", it.get("form_submit")), ("aria-busy", it.get("busy")),
+                     ("aria-valuenow", it.get("valuenow")), ("aria-valuemax", it.get("valuemax"))):
+            if v is None or v == "" or v is False:
+                continue
+            attrs[k] = v
         out.append({
-            "name": it.get("name", ""), "role": role, "native_role": it.get("role") or it.get("tag", ""),
+            "name": SAFE_PASSWORD_NAME if is_pw else it.get("name", ""), "role": role,
+            "native_role": it.get("role") or it.get("tag", ""),
             "rect": it["rect"], "enabled": not it.get("disabled"), "focused": bool(it.get("focused")),
             "value": None if is_pw else it.get("value"),
             "checked": it.get("checked"),
             "is_password": is_pw,
-            "attrs": {k: v for k, v in (("gid", it.get("gid")), ("type", it.get("type")),
-                                        ("href", it.get("href")), ("frame", it.get("frame")),
-                                        ("form_submit", it.get("form_submit")),
-                                        ("aria-busy", it.get("busy")), ("aria-valuenow", it.get("valuenow")),
-                                        ("aria-valuemax", it.get("valuemax"))) if v not in (None, "", False)},
+            "attrs": attrs,
         })
     return out

@@ -192,8 +192,16 @@ class Action:
             raise ActionParseError("out_of_range", f"amount must be within 1..{MAX_SCROLL_AMOUNT}", "amount")
         if t == "type" and self.text is None:
             raise ActionParseError("missing_field", "type needs text", "text")
-        if t in {"hotkey", "key_down", "key_up"} and not self.keys:
-            raise ActionParseError("missing_field", f"{t} needs keys, e.g. [\"ctrl\", \"s\"]", "keys")
+        if t in {"hotkey", "key_down", "key_up"}:
+            if not self.keys:
+                raise ActionParseError("missing_field", f"{t} needs keys, e.g. [\"ctrl\", \"s\"]", "keys")
+            # 第三轮条目 1：一个动作只能是一个“组合”（修饰键 + 恰好一个按键）。
+            # tab+enter / 多字符 secret+enter 这类序列必须拆成独立动作，重新观察、重新过闸。
+            from .keys import KeySequenceError, validate_sequence
+            try:
+                validate_sequence(self.keys, kind=t)
+            except KeySequenceError as e:
+                raise ActionParseError("bad_value", str(e), "keys") from None
         if t == "open_app" and not (self.app or "").strip():
             raise ActionParseError("missing_field", "open_app needs app", "app")
         if t == "navigate" and not (self.url or self.text or "").strip():

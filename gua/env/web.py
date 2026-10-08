@@ -352,8 +352,19 @@ class WebEnv(Env):
         self._snapshot_nodes: dict = {}
         self._bound_elements: dict = {}
 
+    semantic_actions = True      # v0.6：DOM 语义动作（不移动页面指针；被遮挡时拒绝后台、交给前台真实输入）
+
     def bind_action(self, action: Action, obs: Observation) -> Action:
         return replace(action, binding={"snapshot_id": obs.snapshot_id})
+
+    def pointer_position(self):
+        return tuple(self.cursor) if self.cursor else None
+
+    def foreground_token(self) -> str:
+        try:
+            return f"page:{id(self._alive_active())}"
+        except Exception:  # noqa: BLE001
+            return ""
 
     def element_identity(self, element):
         doc, node = element.attrs.get("document_id"), element.attrs.get("dom_id")
@@ -991,6 +1002,88 @@ class WebEnv(Env):
                 or info["form_submit_id"] != element.attrs.get("form_submit_id", "")):
             raise ValueError("element semantics changed")
 
+    def _resolve_bound(self, pg, a: Action):
+        """观察时的原始 DOM 节点（不会用新快照里复用同一编号的节点代替）。"""
+        element = self._bound_elements.get(a.element_id)
+        if element is None:
+            raise ValueError("element binding unavailable")
+        frame, nodes = self._snapshot_nodes[element.attrs.get("frame") or "0"]
+        handle = nodes.evaluate_handle("(nodes, id) => nodes.get(id)", element.attrs.get("dom_id")).as_element()
+        if handle is None or frame not in pg.frames:
+            raise ValueError("original element detached")
+        return handle, element
+
+    _JS_COVERED = """el => {
+      const r = el.getBoundingClientRect();
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
+      let hit = document.elementFromPoint(x, y);
+      while (hit && hit.shadowRoot && hit.shadowRoot.elementFromPoint) {
+        const inner = hit.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === hit) break; hit = inner; }
+      return !(hit === el || el.contains(hit) || (hit && hit.contains && hit.contains(el) && hit.tagName === 'LABEL'));
+    }"""
+    _JS_SET_VALUE = """(el, v) => {
+      const tag = el.tagName;
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') return 'unsupported';
+      const proto = tag === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+      el.dispatchEvent(new Event('input', {bubbles: true}));
+      el.dispatchEvent(new Event('change', {bubbles: true}));
+      return el.value === v ? 'ok' : 'mismatch';
+    }"""
+
+    def _bound_semantic(self, pg, a: Action, t0: float) -> ExecResult:
+        """语义动作：DOM 方法 / 属性写入，不产生指针事件序列，也不移动 self.cursor。
+
+        与前台路径相同的身份检查（同一原始节点、名称 / 角色 / 密码属性 / 勾选状态未变）；被其他元素遮挡时
+        返回 background_unavailable（绝不“穿透”弹窗），由混合执行器改走 Playwright 真实点击（会被遮挡拦下）。
+        """
+        route = f"dom_semantic:{a.method}"
+        handle = None
+        try:
+            handle, element = self._resolve_bound(pg, a)
+            self._check_bound_element(handle, element)
+            m = a.method
+            if m in {"invoke", "toggle", "select", "expand", "collapse"}:
+                if m == "toggle" and element.checked is None:
+                    return ExecResult(False, "unsupported: element has no checked state", t0, time.time(), route=route)
+                if handle.evaluate(self._JS_COVERED):
+                    return ExecResult(False, "background_unavailable: target covered by another element", t0,
+                                      time.time(), route=route)
+                tag = handle.evaluate("el => el.tagName")
+                if m == "select" and tag == "SELECT" and a.text:
+                    handle.select_option(label=a.text, timeout=500)
+                else:
+                    handle.evaluate("el => el.click()")
+            elif m == "set_value":
+                if element.is_password:
+                    return ExecResult(False, "blocked_by_safety: semantic set_value never writes password fields",
+                                      t0, time.time(), route=route)
+                res = handle.evaluate(self._JS_SET_VALUE, a.text or "")
+                if res == "unsupported":
+                    return ExecResult(False, "background_unavailable: not a plain input/textarea", t0, time.time(),
+                                      route=route)
+                if res != "ok":
+                    return ExecResult(False, "native_action_error: value not applied; observe again", t0,
+                                      time.time(), route=route)
+            elif m == "focus":
+                handle.focus()
+            elif m == "scroll_into_view":
+                handle.scroll_into_view_if_needed(timeout=800)
+            else:
+                return ExecResult(False, f"unsupported: {m}", t0, time.time(), route=route)
+            return ExecResult(True, "", t0, time.time(), route=route)
+        except Exception as exc:  # noqa: BLE001
+            return ExecResult(False, f"stale_target: bound element unavailable ({type(exc).__name__}); observe again",
+                              t0, time.time(), route=route)
+        finally:
+            if handle is not None:
+                try:
+                    handle.dispose()
+                except Exception:
+                    pass
+
     def _bound_click(self, pg, a: Action, t0: float) -> ExecResult:
         """Use the original node, never a new node that reuses its candidate ID."""
         element = self._bound_elements.get(a.element_id)
@@ -1124,6 +1217,10 @@ class WebEnv(Env):
             return ExecResult(False, err, t0, time.time())
         if a.type == "type":
             return self._do_type(pg, a, t0)
+        if a.type == "invoke":
+            if not a.binding or a.element_id is None:
+                return ExecResult(False, "stale_target: semantic action needs an observed element", t0, time.time())
+            return self._bound_semantic(pg, a, t0)
         if a.binding and a.type == "click" and a.element_id is not None:
             return self._bound_click(pg, a, t0)
         try:

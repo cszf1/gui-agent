@@ -26,7 +26,7 @@ from .a11y import finalize, uia_raw
 from .base import Env, ExecResult, Observation
 from .commands import InvalidAppName, validate_app_name, windows_open_app_argv
 from .desktop import PyAutoGUIInput, clipboard_type
-from .uia_execution import ObservedControl, activate_control, replace_control_text, runtime_id
+from .uia_execution import semantic_control, ObservedControl, activate_control, replace_control_text, runtime_id
 
 
 def _startfile(path: str) -> None:
@@ -61,6 +61,7 @@ def _set_dpi_aware() -> float:
 class WindowsEnv(Env):
     platform = "windows"
     targeted_input = True
+    semantic_actions = True      # v0.6：UIA 模式语义动作（不移动指针、不要求窗口在前台）
     scroll_unit_px = 100
 
     def __init__(self, max_elements: int = 150, uia_depth: int = 12, monitor: int = 1):
@@ -92,6 +93,36 @@ class WindowsEnv(Env):
     def element_identity(self, element):
         rid = element.attrs.get("uia_runtime")
         return (self._snapshot_window, rid) if self._snapshot_window and rid else None
+
+    def pointer_position(self):
+        try:
+            import pyautogui
+            x, y = pyautogui.position()
+            return int(x), int(y)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def foreground_token(self) -> str:
+        try:
+            return str(self._window_key())
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _semantic(self, a: Action, t0: float) -> ExecResult:
+        """后台语义动作：只要求观察时的窗口仍存在、控件身份不变；不检查也不改变前台窗口。"""
+        if not a.binding or a.binding.get("snapshot_id") != self._snapshot_id or not self._snapshot_window:
+            return ExecResult(False, "stale_target: observation changed; observe again", t0, time.time())
+        try:
+            if not ctypes.windll.user32.IsWindow(ctypes.c_void_p(self._snapshot_window[0])):
+                return ExecResult(False, "stale_target: observed window closed", t0, time.time())
+        except Exception:  # noqa: BLE001
+            pass
+        element = self._bound_elements.get(a.element_id) if a.element_id is not None else None
+        native = self._controls.get(element.attrs.get("uia_key")) if element else None
+        if native is None:
+            return ExecResult(False, "stale_target: control binding unavailable", t0, time.time())
+        return semantic_control(ObservedControl(*native, element), a.method or "invoke", a.text,
+                                (self._mon["left"], self._mon["top"]))
 
     def _grab(self) -> Image.Image:
         raw = self._sct.grab(self._mon)
@@ -185,6 +216,8 @@ class WindowsEnv(Env):
             return ExecResult(False, f"invalid_action: {exc}", t0, time.time())
         if not self.supports(a.type):
             return ExecResult(False, f"unsupported action {a.type} on windows", t0, time.time())
+        if a.type == "invoke":
+            return self._semantic(a, t0)
         err = self._bounds_error(a, self._mon["width"], self._mon["height"])
         if err:
             return ExecResult(False, err, t0, time.time())

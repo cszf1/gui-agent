@@ -110,6 +110,47 @@ def _norm(s: str) -> str:
     return " ".join((s or "").lower().split())
 
 
+_NEG_BEFORE = re.compile(r"(?:\b(?:not|no|never|cannot|can't|couldn't|could not|failed to|unable to|isn't|wasn't|"
+                         r"aren't|weren't|without)\s*|未|没有|没|无法|不能|不|失败[:：]?\s*)$", re.I)
+
+
+def _boundary_ok(hay: str, i: int, j: int, needle: str) -> bool:
+    def word(c: str) -> bool:
+        return c.isascii() and (c.isalnum() or c == "_")
+    if needle and word(needle[0]) and i > 0 and word(hay[i - 1]):
+        return False
+    if needle and word(needle[-1]) and j < len(hay) and word(hay[j]):
+        return False
+    return True
+
+
+def text_evidence(haystack: str, expect: str) -> bool:
+    """Whether ``expect`` is positively shown in ``haystack`` (v0.7).
+
+    Plain substring matching produced false "done" verdicts: "Saved" matched
+    "Unsaved changes" and "Not saved". A hit now needs ASCII word boundaries
+    (CJK text has no word spaces, so it is matched as is) and must not be
+    directly preceded by a negation on the same line. Negations that are part of
+    the expected text itself are kept, e.g. expect "not available".
+    """
+    hay = " ".join((haystack or "").lower().replace("\r", "\n").split(" "))
+    needle = " ".join((expect or "").lower().split())
+    if not needle:
+        return False
+    flat = "\n".join(" ".join(line.split()) for line in hay.splitlines())
+    start = 0
+    while True:
+        i = flat.find(needle, start)
+        if i < 0:
+            return False
+        j = i + len(needle)
+        line_start = flat.rfind("\n", 0, i) + 1
+        prefix = flat[max(line_start, i - 24):i]
+        if _boundary_ok(flat, i, j, needle) and not _NEG_BEFORE.search(prefix):
+            return True
+        start = i + 1
+
+
 def _evidence_fragments(obs: Observation, expect_text: str) -> list[str]:
     """承载 expect_text 的独立片段：obs.text 里以换行分隔、包含它的行，以及元素的 name/value。
 
@@ -276,7 +317,7 @@ class Verifier:
                 return Check(Verdict.SUCCESS, f"all postconditions verified: {rep.evidence()}", "L1", sig)
         # 5) 无障碍树正面证据
         if self.use_a11y:
-            if expect_text and expect_text.lower() in after.all_text().lower():
+            if expect_text and text_evidence(after.all_text(), expect_text):
                 if not self._stale_evidence(before, after, expect_text):
                     return Check(Verdict.SUCCESS, f"accessibility tree shows {expect_text!r}", "L1", sig)
                 sig["stale_expect_text"] = True      # 动作前就有、且未发生实质替换：不能作为这一步的成功证据
@@ -374,11 +415,18 @@ class Verifier:
             if rep.verdict == "success" and not expect_text:
                 return Check(Verdict.SUCCESS, f"all sub-goal postconditions hold now: {rep.evidence()}", "goal-L1",
                              {"postconditions": rep.to_list()})
+            if rep.verdict != "success":
+                # v0.7: an explicit predicate that cannot be established (ambiguous target,
+                # stale evidence, ...) must not be overridden by a visible text snippet.
+                pc_unknown = f"sub-goal postconditions not established: {rep.evidence()}"
+                if self.llm is None or not self.llm_goal:
+                    return Check(Verdict.UNCERTAIN, pc_unknown, "goal-L1", {"postconditions": rep.to_list()})
+                expect_text = None
         stale = ""
         stale_block = ""
         if expect_text and self.use_a11y:
             low = expect_text.lower()
-            if low in obs.all_text().lower():
+            if text_evidence(obs.all_text(), expect_text):
                 if baseline is not None and self._stale_evidence(baseline, obs, expect_text):
                     stale = (f"{expect_text!r} was already visible before this sub-goal started and is still the "
                              f"same evidence (stale)")
@@ -420,7 +468,7 @@ class Verifier:
         stale_sgs: list = []
         proven = list(checkable)
         if self.use_a11y:
-            gone = [sg for sg in checkable if sg.expect_text.lower() not in text]
+            gone = [sg for sg in checkable if not text_evidence(obs.all_text(), sg.expect_text)]
             if gone:
                 desc = "; ".join(f"sub-goal {sg.id} ({sg.goal!r}) expected {sg.expect_text!r}" for sg in gone)
                 return Check(Verdict.FAILED, f"no longer true on the current screen: {desc}", "final-L1",
@@ -434,14 +482,20 @@ class Verifier:
             from .postconditions import evaluate as _eval_pc
             for sg in subgoals:
                 pcs = getattr(sg, "postconditions", None)
-                if sg in checkable or not pcs:
+                if not pcs:
                     continue
+                # v0.7: postconditions are re-checked for every sub-goal, including those that
+                # also carry expect_text; a still-visible text must not hide a predicate that
+                # no longer holds (e.g. the checkbox was unticked again by a later step).
                 rep = _eval_pc(pcs, None, obs, use_a11y=True)
                 if rep.verdict == "failed":
                     return Check(Verdict.FAILED, f"no longer true on the current screen: sub-goal {sg.id} "
                                  f"({sg.goal!r}) postconditions: {rep.evidence()}", "final-L1",
                                  {"failed_subgoals": [sg.id]})
-                if rep.verdict == "success":
+                if sg in checkable:
+                    if rep.verdict != "success" and sg in proven:
+                        proven.remove(sg)
+                elif rep.verdict == "success":
                     proven.append(sg)
             if subgoals and len(proven) == len(subgoals) and final_l2 != "always":
                 return Check(Verdict.SUCCESS, f"all {len(subgoals)} sub-goal expectations visible now", "final-L1")

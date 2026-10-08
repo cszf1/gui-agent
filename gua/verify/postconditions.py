@@ -160,9 +160,9 @@ def evaluate_one(pc: dict, before, after, use_a11y: bool = True, output: Optiona
     if not use_a11y:
         return PCResult(k, "unknown", "accessibility/text evidence disabled by policy (vision only)", spec)
     if k == "text_appears":
-        from .verifier import _evidence_fragments
+        from .verifier import _evidence_fragments, text_evidence
         t = pc["text"]
-        now = t.lower() in after.all_text().lower()
+        now = text_evidence(after.all_text(), t)
         if not now:
             return PCResult(k, "fail", f"{t!r} not visible after the action", spec)
         cur = _evidence_fragments(after, t)

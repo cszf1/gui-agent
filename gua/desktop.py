@@ -83,6 +83,9 @@ def desktop_config(settings: dict, *, demo: bool = False, headless: bool = False
     overrides = {"env": {"platform": platform, "web": {"headless": headless}},
                  "agent": {"max_steps": steps}, "safety": {"mode": safety},
                  "grounding": {"coord": "norm1000"}}
+    if sys.platform == "win32":
+        # Desktop releases use the installed system Edge, never download Chromium.
+        overrides["env"]["web"]["channel"] = "msedge"
     if not demo:
         spec = model_spec(settings)
         overrides["models"] = {"planner": spec, "actor": None,
@@ -153,8 +156,10 @@ class Control:
 
 
 class StreamingLogger(TrajectoryLogger):
-    def __init__(self, root: Path, run_id: str, emit: Callable, sanitize: Callable = lambda value: value):
-        super().__init__(root, run_id)
+    def __init__(self, root: Path, run_id: str, emit: Callable, sanitize: Callable = lambda value: value,
+                 save_images: bool = False):
+        super().__init__(root, run_id, save_images=save_images)
+        (self.dir / ".gui-agent-run").write_text("gui-agent-desktop-run-v1\n", encoding="utf-8")
         self.emit = emit
         self.sanitize = sanitize
         self.privacy_sent = False
@@ -343,7 +348,8 @@ class Worker:
             raise ValueError("请输入任务，长度不超过 20000 字符")
         self.control.checkpoint()
         self.emit("state", state="running")
-        log = StreamingLogger(Path(msg["runsRoot"]), self.run_id, self.emit, self.credentials.scrub_obj)
+        log = StreamingLogger(Path(msg["runsRoot"]), self.run_id, self.emit, self.credentials.scrub_obj,
+                              save_images=settings.get("saveScreenshots") is True)
         agent = None
         try:
             start_url = settings.get("startUrl", "").strip() if not demo else ""
@@ -429,6 +435,9 @@ class Worker:
 
 
 def main():
+    if sys.platform == "win32" and os.environ.get("GUA_APP_TEMP"):
+        from .app_native import configure_com_cache
+        configure_com_cache(Path(os.environ["GUA_APP_TEMP"]) / "comtypes")
     # PyInstaller's Windows bootloader can ignore PYTHONIOENCODING and keep the
     # system code page. The desktop pipe protocol is always UTF-8 in both ways.
     for name in ("stdin", "stdout", "stderr"):

@@ -8,6 +8,7 @@ build/
 dist/
 node_modules/
 desktop/out/
+desktop/dist-ui/
 desktop/release/
 desktop/resources/
 desktop/test-results/

@@ -3,7 +3,7 @@ import { ArrowUp, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Cp
   Globe, Loader2, MessageSquare, Monitor, MoreHorizontal, Pause, Play, Plus, Settings2,
   ShieldCheck, Square, Workflow, X, XCircle } from 'lucide-react'
 import { activeStatuses, applyEvent, sameService, statusText, type AgentEvent, type AppState, type DesktopEvent,
-  type PublicSettings, type Run, type Session, type SettingsInput } from './shared'
+  type PublicSettings, type Run, type Session, type SettingsInput, type StorageInfo } from './shared'
 
 function message(error: unknown) {
   return (error instanceof Error ? error.message : '操作失败').replace(/^Error invoking remote method '[^']+': Error: /, '')
@@ -20,8 +20,8 @@ function actionText(record: Record<string, unknown>) {
   return `${names[String(action.type)] || String(action.type)} ${target}`.trim()
 }
 
-function SettingsDialog({ settings, bundled, onClose, onSave }: {
-  settings: PublicSettings; bundled: boolean; onClose(): void; onSave(settings: PublicSettings): void
+function SettingsDialog({ settings, bundled, onClose, onSave, onClean }: {
+  settings: PublicSettings; bundled: boolean; onClose(): void; onSave(settings: PublicSettings): void; onClean(state: AppState): void
 }) {
   const [draft, setDraft] = useState<SettingsInput>(() => {
     const { hasApiKey: _has, keyPersisted: _persisted, ...value } = settings
@@ -30,6 +30,19 @@ function SettingsDialog({ settings, bundled, onClose, onSave }: {
   const [showKey, setShowKey] = useState(false)
   const [busy, setBusy] = useState('')
   const [notice, setNotice] = useState<{ ok: boolean; text: string }>()
+  const [storage, setStorage] = useState<StorageInfo>()
+  const [confirmCleanup, setConfirmCleanup] = useState(false)
+  useEffect(() => { void window.desktop.storageInfo().then(setStorage).catch((error) => setNotice({ ok: false, text: message(error) })) }, [])
+  async function clean() {
+    setBusy('clean')
+    try {
+      onClean(await window.desktop.clearLocalHistory())
+      setStorage(await window.desktop.storageInfo())
+      setConfirmCleanup(false)
+      setNotice({ ok: true, text: '历史记录和运行报告已清理，模型配置与 API Key 已保留。' })
+    } catch (error) { setNotice({ ok: false, text: message(error) }) }
+    finally { setBusy('') }
+  }
   const retainsKey = settings.hasApiKey && sameService(draft, settings) && !draft.clearApiKey
   const update = (value: Partial<SettingsInput>) => { setDraft((old) => ({ ...old, ...value })); setNotice(undefined) }
   async function save(event: FormEvent) {
@@ -77,6 +90,19 @@ function SettingsDialog({ settings, bundled, onClose, onSave }: {
           <label>最多执行步骤<input type="number" min="1" max="200" value={draft.maxSteps} onChange={(e) => update({ maxSteps: Number(e.target.value) })} /></label>
           {!bundled && <label>Python 可执行文件 <span className="optional">可选</span><input value={draft.pythonPath} placeholder="自动使用项目 .venv 或系统 Python" onChange={(e) => update({ pythonPath: e.target.value })} /></label>}
         </details>
+        <div className="form-section-label second"><ShieldCheck size={16} /> 本地存储</div>
+        <label className="storage-checkbox"><input type="checkbox" checked={draft.saveScreenshots}
+          onChange={(e) => update({ saveScreenshots: e.target.checked })} /> 保存任务截图到运行报告</label>
+        <p className="field-hint">默认只实时显示画面，不保存截图。历史报告最多保留 30 天、50 份和 200 MB；清理不会删除你创建的文档。</p>
+        {storage && <div className="storage-details"><p>{storage.portable ? '便携版 · 数据保存在软件目录内' : '安装版 · 数据集中保存在本机'}<br />
+          报告 {storage.runCount} 份 · {(storage.runBytes / 1024 / 1024).toFixed(1)} MB · 缓存和临时文件 {(storage.cacheBytes / 1024 / 1024).toFixed(1)} MB</p>
+          <code>{storage.dataPath}</code></div>}
+        <div className="storage-actions"><button type="button" className="secondary-button" disabled={!!busy}
+          onClick={() => { void window.desktop.openDataFolder().catch((error) => setNotice({ ok: false, text: message(error) })) }}>打开数据目录</button>
+          <button type="button" className="secondary-button" disabled={!!busy} onClick={() => setConfirmCleanup(true)}>清理历史和任务缓存</button></div>
+        {confirmCleanup && <div className="cleanup-confirmation"><p>删除本地对话和运行报告？模型配置与 API Key 会保留。</p>
+          <button type="button" className="secondary-button" disabled={!!busy} onClick={() => setConfirmCleanup(false)}>取消清理</button>
+          <button type="button" className="stop-button" disabled={!!busy} onClick={() => { void clean() }}>确认清理</button></div>}
         {notice && <div className={`notice ${notice.ok ? 'good' : 'bad'}`} role="status">{notice.ok ? <CheckCircle2 size={16} /> : <XCircle size={16} />}{notice.text}</div>}
         <div className="dialog-footer"><button type="button" className="secondary-button" disabled={!!busy || !draft.model} onClick={() => { void test() }}>
           {busy === 'test' ? <Loader2 size={15} className="spin" /> : <Workflow size={15} />} 测试连接</button>
@@ -162,6 +188,12 @@ export default function App() {
     if (!window.desktop) { setError('请从桌面 App 启动 GUI Agent。'); return }
     let disposed = false
     const unsubscribe = window.desktop.subscribe((event: DesktopEvent) => {
+      if (event.type === 'snapshot') {
+        setApp(event.state); setPreview(undefined)
+        const active = event.state.sessions.flatMap((s) => s.runs).find((r) => activeStatuses.has(r.status))
+        setPending(active?.events.findLast((e) => e.type === 'request'))
+        return
+      }
       if (event.type === 'run-created') {
         setPreview(undefined); setPrivacy(false); setPending(undefined)
         setApp((old) => old ? { ...old, sessions: old.sessions.map((s) => s.id === event.run.sessionId ? {
@@ -266,6 +298,7 @@ export default function App() {
         {app.settings.hasApiKey && !app.settings.keyPersisted && <div className="memory-key-note">当前系统没有可用的安全存储，API Key 仅在本次打开期间保留。</div>}
       </aside></div>
     </main>
-    {settingsOpen && <SettingsDialog settings={app.settings} bundled={app.runtime.bundledWorker} onClose={() => setSettingsOpen(false)} onSave={(settings) => setApp((old) => old ? { ...old, settings } : old)} />}
+    {settingsOpen && <SettingsDialog settings={app.settings} bundled={app.runtime.bundledWorker} onClose={() => setSettingsOpen(false)} onSave={(settings) => setApp((old) => old ? { ...old, settings } : old)}
+      onClean={(value) => { setApp(value); setSessionId(value.sessions[value.sessions.length - 1].id); setPreview(undefined); setPending(undefined); setPrivacy(false) }} />}
   </div>
 }

@@ -4,45 +4,40 @@
 Meta Muse、Grok Bot 用于参考公开的执行设计和电脑操控体验；产品不提供云电脑或云端运行服务。
 v0.6 的 RemoteEnv、Linux 沙盒和 Docker 镜像是可选的开发、评测与 MCP 工具，不改变本机桌面 App 的产品方向。
 
-## 语言与技术栈
+## v0.8 语言与技术栈
 
 | 层 | 选择 | 原因 |
 | --- | --- | --- |
-| 桌面界面与主进程 | TypeScript、React、Electron | 适合聊天、流式事件、会话、设置、系统快捷键和安装包；桌面生态成熟 |
-| Agent 与平台执行 | Python | 复用现有的规划、定位、安全、核验、恢复和跨平台适配，避免重写已验证代码 |
-| 进程间通信 | 私有管道上的 JSON-lines | API Key 只经主进程到执行器；无需开放本地 HTTP 端口；方便停止整个执行进程 |
+| 界面 | React、TypeScript、系统 Edge App 窗口 | 复用系统浏览器，保留聊天与活动流体验，避免分发 Electron |
+| 本机服务与执行器 | 嵌入式 Python | 复用已有规划、定位、安全、核验、恢复、UIA 与 Web 适配 |
+| 启动器 / 安装 | 小型 C# 启动器、NSIS 单用户安装 | 无控制台启动、无需管理员权限；构建时使用系统 .NET 编译器 |
+| 通信 | 认证 loopback HTTP + 私有 JSON-lines 管道 | 界面只访问受限 API；模型凭据从服务经私有管道传给执行器 |
 
-Tauri + Rust 是追求安装体积时可考虑的方案，但仍需要处理 Python sidecar、权限与跨平台打包。
-纯 Python + Qt 能快速完成传统桌面界面；当前产品的聊天与活动流更适合 React，且已有 Python 引擎可独立复用。
-第一版不新增 Rust/C++ 重写工作。
+v0.5–v0.7 使用 Electron/PyInstaller/内置 Chromium。v0.8 按安装体积和清理需求替换该层，保留已有 Agent 引擎，不额外重写成 Rust/C++。
 
 ```mermaid
 flowchart LR
-  UI[React 聊天与设置] -->|有限 IPC| Main[Electron 主进程]
-  Main --> Vault[操作系统安全存储]
-  Main <-->|JSON-lines 私有管道| Worker[Python 执行引擎]
-  Worker --> Guard[既有安全检查]
+  UI[系统 Edge 中的 React 界面] <-->|认证 loopback HTTP| Main[嵌入式 Python 本机服务]
+  Main --> Vault[当前用户 DPAPI]
+  Main <-->|JSON-lines 私有管道| Worker[Python 执行器]
+  Worker --> Guard[安全闸门]
   Guard --> Desktop[Windows UIA 与鼠标键盘]
-  Guard --> Browser[Playwright Chromium]
-  Worker <-->|图片、文字与结构化动作| Model[用户配置的模型 API]
-  Worker --> Verify[结果核验与失败恢复]
-  Verify --> UI
+  Guard --> Browser[Playwright 系统 Edge]
+  Worker <-->|图片、文字与动作| Model[用户配置的模型 API]
+  Worker --> Verify[核验与失败恢复]
+  Verify --> Main
 ```
 
-## 交互与实现
+## 交互与边界
 
-- **聊天式任务**：对话列表、任务输入、执行计划、操作记录、核验状态、报告入口；只有引擎 `done` 结果显示完成。
-- **本机操作**：Windows 的 UIA/截图/鼠标键盘复用现有适配器；独立浏览器复用 Playwright。
-- **自定义模型**：用户在界面配置协议、Base URL、API Key、模型 ID；所有角色使用同一模型，无需默认本地定位服务器。
-- **可观察执行**：从真实环境观察生成界面预览，展示实际执行与核验事件；历史不保存预览的 base64 数据。
-- **人工介入**：确认与提问通过管道等待当前请求的回答，绑定运行和请求 ID；拒绝继续由原安全闸门处理。
-- **暂停与停止**：暂停在观察/执行边界生效；暂停后丢弃旧观察对应的动作，重新判断。停止通过终止进程树中断尚未结束的模型或平台调用。
-- **连续任务**：同一会话复用当前执行环境，保留此前任务结果摘要；切换会话和修改设置会重建执行器。
-- **打包**：PyInstaller 冻结 Python 引擎与平台依赖，安装包包含 Chromium；Electron Builder 生成 Windows NSIS 安装器。
+- 聊天、执行画面、步骤、确认、暂停/接管、停止、结果与报告继续保留；只有实际引擎核验结果为 `done` 才显示完成。
+- 本机服务只绑定 `127.0.0.1` 随机端口；每次运行生成新的高熵控制令牌，验证 Host/Origin，不开放 CORS；浏览器只暴露明确的 API，没有任意文件或 shell 入口。
+- 界面启动 URL 的控制令牌放在 fragment，前端读取后清除 URL；模型 API Key 不出现在 argv，通过私有管道进入执行器。控制令牌不隔离同一 Windows 用户的其他进程。
+- 界面和任务使用软件自己的 Edge profile，保持个人 Edge 数据独立；Windows Job Object 管理软件创建的子进程树。
+- 截图默认不保存；报告/历史有期限、数量和字节上限；临时目录和 UIA COM 缓存集中保存，退出清理。
+- 安装与注册表写入当前用户；卸载删除软件程序、数据、登记及快捷方式，清理不跟随 junction/symlink。
 
-界面使用 Electron context isolation、sandbox 与关闭 Node integration 的 renderer；preload 仅暴露明确的操作。
-主进程验证 IPC 参数和调用 frame，不提供任意文件访问、任意 shell 或任意 IPC 调用。
-API Key 在 Windows 使用操作系统保护加密；截图、敏感输入与模型出口沿用既有引擎的隐私边界。
+完整使用、目录策略和构建说明见 [desktop/README.md](../desktop/README.md)。
 
 ## 参考的公开资料
 
@@ -54,12 +49,13 @@ API Key 在 Windows 使用操作系统保护加密；截图、敏感输入与模
 - [Claude 电脑操控的实践](https://claude.com/resources/articles/best-practices-for-computer-and-browser-use-with-claude)：观察、坐标空间、工具选择与执行反馈。
 - [Meta Muse 的公开安全设计](https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse)（2026-09-08）：隔离的 Linux 执行环境、外部 Sentinel 权限与网络控制、凭据代理和权限分离。2026-10-08 已核对该官方来源；这里只作为设计参考，没有接入 Muse 实现，也不据此宣称具有同等隔离能力。
 - [Grok Bot 的电脑与应用](https://docs.x.ai/grok-bot/computer-and-apps)：持续会话、电脑可见性和人工操作的协作方式。
-- [Electron 安全指南](https://www.electronjs.org/docs/latest/tutorial/security/) 与 [safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage/)：renderer 隔离和系统安全存储。
+- [Python Windows embedded distribution](https://docs.python.org/3/using/windows.html#the-embeddable-package)：随应用分发隔离的 Python runtime。
+- [Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata) 与 [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)：当前用户凭据保护和子进程生命周期。
 
 ## 验证范围
 
 v0.5 增加了原生控件路径、元素身份绑定、指定字段输入、界面等待优化与耗时统计，详见 [执行改进与基准](execution-improvements.md)。
 
-桌面端测试覆盖配置、加密存储、事件状态，以及真实 Electron → Python → Chromium 执行链路。
+桌面端测试覆盖配置、加密存储、事件状态、认证 HTTP、存储上限和清理，以及真实 React → Python → 浏览器执行链路。
 模型 API 测试使用本地 HTTP 服务提供确定性的回复，验证协议和实际操作；不据此报告真实模型自主成功率。
-Windows CI 构建安装包，运行冻结引擎的浏览器任务及真实 WinForms/UIA 控件检查。原生检查范围有限，复杂本机应用仍需在交互式 Windows 桌面实测，不能由 Linux 浏览器验证代替。
+Windows CI 构建安装包，运行嵌入式 Python 的系统 Edge 任务及真实 WinForms/UIA 控件检查，并验证安装、退出、升级和卸载。原生检查范围有限，复杂本机应用仍需在交互式 Windows 桌面实测，不能由 Linux 浏览器验证代替。

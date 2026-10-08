@@ -1,10 +1,12 @@
-import { _electron as electron, expect, test } from '@playwright/test'
+import { spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
+import { expect, test } from '@playwright/test'
 import { createServer } from 'node:http'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-test('desktop UI drives Chromium, uses a configured API, confirms actions, pauses and stops', async () => {
+test('desktop UI drives Chromium, uses a configured API, confirms actions, pauses and stops', async ({ page }) => {
   const directory = mkdtempSync(join(tmpdir(), 'gui-agent-e2e-'))
   const apiKey = 'desktop-test-key-not-a-real-credential'
   let mode = 'form'
@@ -50,12 +52,16 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
   })
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
   const port = (server.address() as { port: number }).port
-  const electronApp = await electron.launch({
-    args: [resolve('out/main/index.js'), '--no-sandbox'],
-    env: { ...process.env, GUI_AGENT_USER_DATA: directory, GUI_AGENT_TEST_HEADLESS: '1' },
+  const backend = spawn(process.env.GUI_AGENT_PYTHON || 'python', ['-B', '-u', '-m', 'gua.windows_app',
+    '--serve-test', '--headless', '--data-dir', directory, '--ui-root', resolve('dist-ui')],
+    { cwd: resolve('..'), env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const lines = createInterface({ input: backend.stdout })
+  const info = await new Promise<{ origin: string; token: string }>((done, fail) => {
+    lines.once('line', (line) => { try { done(JSON.parse(line)) } catch { fail(new Error('Backend did not start')) } })
+    backend.once('exit', () => fail(new Error('Backend exited during startup')))
   })
   try {
-    const page = await electronApp.firstWindow()
+    await page.goto(info.origin + '/#token=' + info.token)
     async function submitTask(task: string) {
       const count = await page.locator('.conversation-pair').count()
       await page.getByLabel('输入任务', { exact: true }).fill(task)
@@ -77,7 +83,7 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
       await page.screenshot({ path: join(screenshots, 'welcome.png') })
     }
 
-    // Real renderer -> preload -> main process -> Python -> Playwright, no LLM.
+    // Real renderer -> authenticated loopback -> Python -> Playwright, no LLM.
     await page.getByRole('button', { name: /先试运行本地表单/ }).click()
     await expect(page.locator('.status-badge').last()).toHaveText('已完成', { timeout: 60000 })
     await expect(page.getByAltText('Agent 当前观察到的界面')).toBeVisible()
@@ -87,6 +93,7 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
     expect(requests).toHaveLength(0)
     const meta = JSON.parse(readFileSync(join(directory, 'runs', demo.id, 'meta.json'), 'utf8'))
     expect(meta.result.claimed_done).toBe(true)
+    expect(existsSync(join(directory, 'runs', demo.id, 'shots'))).toBe(false)
     if (screenshots) await page.screenshot({ path: join(screenshots, 'completed-demo.png') })
 
     // Configure an actual loopback OpenAI-compatible HTTP fixture, then run a task
@@ -139,11 +146,26 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
     await expect(pausedRun.locator('.status-badge')).toHaveText('已暂停')
     await page.getByRole('button', { name: '停止', exact: true }).click()
     await expect(pausedRun.locator('.status-badge')).toHaveText('已停止')
+    await page.getByRole('button', { name: '打开设置' }).click()
+    await page.getByRole('button', { name: '清理历史和任务缓存' }).click()
+    await page.getByRole('button', { name: '确认清理', exact: true }).click()
+    await expect(page.getByRole('status')).toContainText('历史记录和运行报告已清理')
+    const cleaned = await page.evaluate(() => window.desktop.load())
+    expect(cleaned.sessions.every((session) => session.runs.length === 0)).toBe(true)
+    expect(cleaned.settings.hasApiKey).toBe(true)
+    expect(cleaned.settings.model).toBe('test-vision')
+    expect(readFileSync(sendPage, 'utf8')).toContain('Send test')
+    expect(readdirSync(join(directory, 'runs'))).toEqual([])
+    expect(readdirSync(join(directory, 'tmp'))).toEqual([])
     expect(errors).toEqual([])
   } finally {
     releasePlanner?.()
-    await electronApp.close()
+    await page.evaluate(() => fetch('/api/shutdown', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Gua-Control': sessionStorage.getItem('gua-control-token')! }, body: '{}' }))
+    await new Promise<void>((done) => { if (backend.exitCode !== null) done(); else backend.once('exit', () => done()) })
+    lines.close()
     await new Promise<void>((done) => server.close(() => done()))
+    expect(readdirSync(join(directory, 'cache'))).toEqual([])
+    expect(readdirSync(join(directory, 'tmp'))).toEqual([])
     rmSync(directory, { recursive: true, force: true })
   }
 })

@@ -1,9 +1,8 @@
 # gui-agent（`gua`）：跨平台、可验证执行与失败恢复的 GUI Agent
 
-当前源码 **v0.7.0**：在 v0.6 基础上修复完成核验的文字证据误判、人工接管可被 agent 自行交还等 15 项审查问题，
-新增 Claude / OpenAI 原生电脑工具适配器（批量动作逐个验证、首个失败即停止、zoom）、Set-of-Mark 观察与置信度定位，
-详见 [docs/review-v0.7.md](docs/review-v0.7.md)。v0.6 内容：混合动作空间（语义 / 后台动作、受限 shell / 文件 / API 工具、像素 GUI 兜底）、动作级与子目标级后置条件、
-已验证完成凭据、换模态恢复、沙箱电脑（接管 / 快照 / 重置）、`gua mcp` 服务器与并行评测。v0.5.0 的 Windows 优先桌面 App 等功能保留。
+当前源码 **v0.8.0**：Windows App 改为嵌入式 Python + 系统 Edge，移除 Electron 与内置 Chromium；
+增加默认不保存截图、报告限额、集中临时目录和单用户安装/卸载清理，见 [v0.8 验证记录](docs/review-v0.8.md)。
+v0.7 的审查修复、原生电脑工具适配器与 Set-of-Mark，以及 v0.6 的混合动作、后台执行、后置条件、换模态恢复、MCP 与评测能力继续保留。
 此前 v0.3/v0.3.1 的四轮安全审查修复一并保留，见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)。
 前身是只支持 Windows 的 `win-gui-agent`（`wga`）。研究方向 A：**执行验证与失败恢复**
 （时间失配：页面没刷新就判断、窗口被最小化/抢焦点、目标在屏幕外……）。
@@ -15,14 +14,16 @@
 - 设计说明：[docs/design.md](docs/design.md)
 - 审查修复对照（四轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
 - v0.6 审查、修订与实测范围：[docs/review-v0.6.md](docs/review-v0.6.md)
+- v0.8 桌面瘦身与清理：[docs/review-v0.8.md](docs/review-v0.8.md)
 - v0.7 审查（发现表、修订、回归测试、能力升级）：[docs/review-v0.7.md](docs/review-v0.7.md)
 - 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)（v0.6 对标见 [§5](docs/research.md#5-v06-对标)）
 
-## 桌面 App（v0.6 开发版）
+## 桌面 App（v0.8，Windows x64）
 
 新增 Windows 优先的聊天桌面 App：在设置里填写 **Base URL、API Key 和模型名称**，然后输入自然语言任务。
 支持本机桌面和独立浏览器操作、执行画面、步骤记录、确认操作、暂停/接管、停止及运行报告。
-界面采用 Electron + React + TypeScript，复用 Python 执行引擎。
+界面采用 React + TypeScript，由系统 Edge 的独立 App 窗口打开；引擎采用嵌入式 Python，浏览器任务走系统 Edge。
+安装不需要管理员权限，也不需要另外安装 Python/Node.js；截图默认不保存，卸载清理软件自己的程序与用户数据。
 
 - [启动、模型配置和 Windows 打包](desktop/README.md)
 - [架构、语言选择与 ZCode/Codex/Claude/Meta Muse/Grok Bot 公开资料](docs/desktop-app.md)
@@ -31,6 +32,15 @@
 无 API Key 时可以从界面试运行本地表单。此演示使用预设动作，不代表真实模型自主任务的成功率。
 
 ## 更新日志
+
+### v0.8.0（Windows 瘦身与清理）
+
+- 移除 Electron、electron-builder、PyInstaller 和内置 Chromium；官方嵌入式 Python + 系统 Edge，React 界面保留。
+- 认证的随机 loopback HTTP API、当前用户 DPAPI、私有执行器管道、Windows 子进程 Job Object；个人 Edge profile 独立。
+- 默认不保存截图，历史最多 30 天/50 份/200 MiB，状态文件上限 8 MiB；缓存、临时文件与 UIA 生成文件集中清理。
+- NSIS 当前用户安装，无 HKLM/PATH/自启/服务修改；升级保留数据，卸载删除软件目录、数据、快捷方式和应用注册表键。
+- 真实 Windows 安装、系统 Edge 窗口、嵌入式引擎任务、关闭/崩溃、升级、卸载和 junction 外部文档保护检查，通过后生成安装包。
+- 验证与安装包体积记录见 [docs/review-v0.8.md](docs/review-v0.8.md)。
 
 ### v0.7.0（源码；未发布 GitHub Release）
 

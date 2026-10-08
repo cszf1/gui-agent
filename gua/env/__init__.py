@@ -67,7 +67,7 @@ def make_env(platform: str = "auto", **kw: Any) -> Env:
     if p == "web":
         from .web import WebEnv
         kw2 = _pick(kw, "start_url", "headless", "browser", "allowed_domains", "max_elements", "slow_mo",
-                    "block_subresources")
+                    "block_subresources", "channel", "executable_path")
         if "viewport" in kw:
             kw2["viewport"] = tuple(kw["viewport"])
         return WebEnv(**kw2)

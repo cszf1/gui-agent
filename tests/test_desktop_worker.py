@@ -91,7 +91,7 @@ def test_confirmation_binds_to_request_id_and_requires_boolean_true():
 
 def test_password_preview_is_blocked_before_entering_ui_pipe(tmp_path):
     events = []
-    log = StreamingLogger(tmp_path, "run", lambda kind, **data: events.append((kind, data)))
+    log = StreamingLogger(tmp_path, "run", lambda kind, **data: events.append((kind, data)), save_images=True)
     obs = Observation(Image.new("RGB", (100, 80)), 1, (100, 80), focus_state="known",
                       elements=[UIElement(1, "password", "textbox", (0, 0, 90, 30), focused=True, is_password=True)])
     log.preview(obs)

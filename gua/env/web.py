@@ -321,11 +321,14 @@ class WebEnv(Env):
                  viewport: tuple[int, int] = (1280, 800), browser: str = "chromium",
                  allowed_domains: Optional[list[str]] = None, max_elements: int = 150,
                  slow_mo: int = 0, block_subresources: bool = False, fetch_timeout: float = 30.0,
-                 max_redirect_hops: int = 20):
+                 max_redirect_hops: int = 20, channel: Optional[str] = None,
+                 executable_path: Optional[str] = None):
         self.start_url = start_url
         self.headless = headless
         self.viewport = viewport
         self.browser_name = browser
+        self.channel = channel
+        self.executable_path = executable_path
         self.allowed_domains = allowed_domains or []
         self.max_elements = max_elements
         self.slow_mo = slow_mo
@@ -386,7 +389,12 @@ class WebEnv(Env):
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
         launcher = getattr(self._pw, self.browser_name)
-        self._browser = launcher.launch(headless=self.headless, slow_mo=self.slow_mo)
+        options = {"headless": self.headless, "slow_mo": self.slow_mo}
+        if self.channel:
+            options["channel"] = self.channel
+        if self.executable_path:
+            options["executable_path"] = self.executable_path
+        self._browser = launcher.launch(**options)
         self._ctx = self._browser.new_context(viewport={"width": self.viewport[0], "height": self.viewport[1]},
                                               device_scale_factor=1)
         if self.allowed_domains:

@@ -36,7 +36,9 @@ class TrajectoryLogger:
                  max_side: Optional[int] = 1280):
         self.run_id = run_id or time.strftime("%Y%m%d-%H%M%S")
         self.dir = Path(root) / self.run_id
-        (self.dir / "shots").mkdir(parents=True, exist_ok=True)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        if save_images:
+            (self.dir / "shots").mkdir(exist_ok=True)
         self.save_images = save_images
         self.max_side = max_side
         self._f = open(self.dir / "steps.jsonl", "a", encoding="utf-8")

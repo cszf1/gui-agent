@@ -36,21 +36,25 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: '24', cache: npm, cache-dependency-path: desktop/package-lock.json}
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
-      - run: pip install -e ".[windows,web]" pyinstaller
+        with: {python-version: '3.13.9'}
+      - run: pip install -e ".[windows,web]"
+      - run: choco install nsis -y --no-progress
       - run: npm ci
         working-directory: desktop
-      - run: python scripts/smoke-windows-native.py
-        working-directory: desktop
-      - run: npm run worker:build
-        working-directory: desktop
-      - run: python scripts/smoke-worker.py
+      - run: npm run build
         working-directory: desktop
       - run: npm run dist:win
         working-directory: desktop
-        env: {CSC_IDENTITY_AUTO_DISCOVERY: 'false'}
+      - name: Real UIA with embedded Python
+        run: '& .\release\GUI-Agent\runtime\python.exe -B scripts/smoke-windows-native.py'
+        working-directory: desktop
+      - name: Install, system Edge UI, run, upgrade and clean uninstall
+        run: python scripts/smoke-windows-installer.py
+        working-directory: desktop
       - uses: actions/upload-artifact@v4
         with:
           name: GUI-Agent-Windows-Installer
-          path: desktop/release/*-Setup.exe
+          path: |
+            desktop/release/*-Setup.exe
+            desktop/release/build-manifest.json
           if-no-files-found: error

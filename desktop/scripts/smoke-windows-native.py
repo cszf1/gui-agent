@@ -64,7 +64,7 @@ $form.Add_Shown({
 """
 
 
-def main():
+def check_native():
     if sys.platform != "win32":
         raise RuntimeError("This harness requires a real Windows desktop")
     from gua.actions import Action
@@ -178,4 +178,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from gua.app_native import configure_com_cache
+    with tempfile.TemporaryDirectory(prefix="gua-uia-cache-") as cache:
+        configure_com_cache(Path(cache))
+        check_native()

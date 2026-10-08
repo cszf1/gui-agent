@@ -10,6 +10,7 @@ export interface Settings {
   safetyMode: 'confirm' | 'deny'
   maxSteps: number
   pythonPath: string
+  saveScreenshots: boolean
 }
 export interface PublicSettings extends Settings { hasApiKey: boolean; keyPersisted: boolean }
 export interface SettingsInput extends Settings { apiKey?: string; clearApiKey?: boolean }
@@ -41,8 +42,12 @@ export interface Run {
 }
 export interface Session { id: string; title: string; createdAt: number; runs: Run[] }
 export interface Runtime { platform: string; shortcutAvailable: boolean; bundledWorker: boolean; engine?: string }
+export interface StorageInfo {
+  dataPath: string; portable: boolean; runCount: number; runBytes: number; cacheBytes: number
+  historyDays: number; maxRuns: number; maxRunBytes: number
+}
 export interface AppState { settings: PublicSettings; sessions: Session[]; runtime: Runtime }
-export type DesktopEvent = AgentEvent | { type: 'run-created'; run: Run }
+export type DesktopEvent = AgentEvent | { type: 'run-created'; run: Run } | { type: 'snapshot'; state: AppState }
 export interface DesktopAPI {
   load(): Promise<AppState>
   newSession(): Promise<Session>
@@ -52,13 +57,16 @@ export interface DesktopAPI {
   control(input: { runId: string; action: 'pause' | 'resume' | 'stop' }): Promise<void>
   respond(input: { runId: string; requestId: string; approved?: boolean; answer?: string }): Promise<void>
   openReport(runId: string): Promise<void>
+  storageInfo(): Promise<StorageInfo>
+  clearLocalHistory(): Promise<AppState>
+  openDataFolder(): Promise<void>
   subscribe(callback: (event: DesktopEvent) => void): () => void
 }
 
 export const defaults: Settings = {
   provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: '',
   target: 'desktop', startUrl: 'https://example.com', taskWindow: '',
-  safetyMode: 'confirm', maxSteps: 50, pythonPath: '',
+  safetyMode: 'confirm', maxSteps: 50, pythonPath: '', saveScreenshots: false,
 }
 export const activeStatuses = new Set<RunStatus>(['starting', 'running', 'pausing', 'paused', 'waiting'])
 

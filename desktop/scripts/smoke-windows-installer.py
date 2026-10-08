@@ -68,10 +68,17 @@ def main():
         with opener.open(req, timeout=20) as response: return json.load(response)["value"]
     def launch():
         subprocess.run([str(PROGRAM / "GUIAgent.exe")], check=True, timeout=10)
-        record = wait_for(lambda: json.loads((DATA / "cache/instance.json").read_text()), "backend startup")
-        process = psutil.Process(record["pid"])
-        assert process.create_time() == record["created"]
-        assert Path(process.exe()).resolve() == (PROGRAM / "runtime/pythonw.exe").resolve()
+        def live_backend():
+            # A crash leaves the old instance file until the new app cleans it.
+            # Wait for a live process with the recorded creation time, not just
+            # for the existence of that stale file (or a reused PID).
+            record = json.loads((DATA / "cache/instance.json").read_text())
+            candidate = psutil.Process(record["pid"])
+            if (candidate.create_time() == record["created"]
+                    and Path(candidate.exe()).resolve() == (PROGRAM / "runtime/pythonw.exe").resolve()
+                    and "gua.windows_app" in candidate.cmdline()):
+                return candidate
+        process = wait_for(live_backend, "live backend startup")
         state = wait_for(lambda: (s if (s := api("load"))["runtime"]["uiConnected"] else None), "real Edge React UI connection", 90)
         return process, state
     def inventory():
@@ -89,6 +96,10 @@ def main():
             installed = True
             assert (PROGRAM / "GUIAgent.exe").is_file() and (PROGRAM / "runtime/python313._pth").is_file()
             assert all(p.is_file() for p in links) and all(registry_exists(k) for k in KEYS)
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, KEYS[1]) as key:
+                command = '"' + str(PROGRAM / "Uninstall.exe") + '"'
+                assert winreg.QueryValueEx(key, "UninstallString")[0] == command
+                assert winreg.QueryValueEx(key, "QuietUninstallString")[0] == command + " /S"
             baseline = inventory()
             backend, state = launch()
             class Directories:

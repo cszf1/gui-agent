@@ -94,7 +94,7 @@ def portable_zip(payload: Path, target: Path):
 def main():
     if sys.platform != "win32" or sys.version_info[:2] != (3, 13):
         raise SystemExit("Build on Windows x64 using Python 3.13")
-    version = json.loads((DESKTOP / "package.json").read_text())["version"]
+    version = json.loads((DESKTOP / "package.json").read_text(encoding="utf-8"))["version"]
     output = DESKTOP / "release"
     payload = output / "GUI-Agent"
     if payload.exists(): shutil.rmtree(payload)
@@ -151,7 +151,7 @@ def main():
                     portableSHA256=hashlib.sha256(portable.read_bytes()).hexdigest(),
                     shipsElectron=False, shipsBrowser=False, shipsNumpy=False,
                     browser="system Microsoft Edge", userScope=True,
-                    packages=[line.strip() for line in LOCK.read_text().splitlines() if line.strip() and not line.startswith("#")],
+                    packages=[line.strip() for line in LOCK.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")],
                     largestFiles=sorted([(p.stat().st_size, str(p.relative_to(payload))) for p in files], reverse=True)[:8])
     (output / "build-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(json.dumps(manifest))

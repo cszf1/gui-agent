@@ -77,7 +77,7 @@ def test_frozen_payload_cannot_borrow_missing_dependencies_from_build_host(tmp_p
 
 
 def test_installer_runs_ownership_and_junction_guard_before_manifest_deletion():
-    source = (ROOT / "desktop/installer/installer.nsi").read_text()
+    source = (ROOT / "desktop/installer/installer.nsi").read_text(encoding="utf-8")
     uninstall = source.split('Section "Uninstall"', 1)[1]
     assert uninstall.index('gua.app_cleanup --uninstall') < uninstall.index('files_uninstall.nsh')
     assert 'RMDir /r "$INSTDIR"' not in uninstall
@@ -87,7 +87,7 @@ def test_installer_runs_ownership_and_junction_guard_before_manifest_deletion():
 
 def test_versions_and_runtime_lock_agree_and_numpy_is_not_shipped():
     import gua
-    package = json.loads((ROOT / "desktop/package.json").read_text())
+    package = json.loads((ROOT / "desktop/package.json").read_text(encoding="utf-8"))
     assert package["version"] == gua.__version__
-    lock = builder.LOCK.read_text()
+    lock = builder.LOCK.read_text(encoding="utf-8")
     assert "numpy" not in lock.lower() and "playwright==" in lock and "comtypes==" in lock

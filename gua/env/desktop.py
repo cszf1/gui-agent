@@ -146,9 +146,72 @@ class PyAutoGUIInput:
         return ExecResult(True, "", t0, time.time())
 
 
-def clipboard_type(text: str, platform: str, *, check_focus=None) -> None:
-    """非 ASCII（中文）走剪贴板粘贴，避开输入法干扰（v0.1 在 Windows 上的做法，推广到三平台）。"""
+KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 0x0002, 0x0004
+VK_RETURN, VK_TAB = 0x0D, 0x09
+
+
+def unicode_key_events(text: str) -> list[tuple[int, int, int]]:
+    """Windows SendInput events (vk, scan, flags) that type ``text`` without the IME (v0.7).
+
+    pyautogui.write sends virtual-key codes; with a Chinese IME (e.g. Microsoft
+    Pinyin) in Chinese mode those keys go into the composition window, so "abc"
+    becomes pinyin candidates. KEYEVENTF_UNICODE (VK_PACKET) delivers characters
+    directly. Characters outside the BMP are sent as UTF-16 surrogate pairs;
+    newline / tab are real Enter / Tab presses.
+    """
+    out: list[tuple[int, int, int]] = []
+    for ch in text.replace("\r\n", "\n"):
+        if ch in "\r\n":
+            out += [(VK_RETURN, 0, 0), (VK_RETURN, 0, KEYEVENTF_KEYUP)]
+            continue
+        if ch == "\t":
+            out += [(VK_TAB, 0, 0), (VK_TAB, 0, KEYEVENTF_KEYUP)]
+            continue
+        data = ch.encode("utf-16-le")
+        for i in range(0, len(data), 2):
+            unit = int.from_bytes(data[i:i + 2], "little")
+            out += [(0, unit, KEYEVENTF_UNICODE), (0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)]
+    return out
+
+
+def _win_send_unicode(events: list[tuple[int, int, int]]) -> None:  # pragma: no cover - Windows only
+    import ctypes
+    from ctypes import wintypes
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("pad", ctypes.c_byte * 32)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    arr = (INPUT * len(events))()
+    for i, (vk, scan, flags) in enumerate(events):
+        arr[i].type = 1                      # INPUT_KEYBOARD
+        arr[i].u.ki = KEYBDINPUT(vk, scan, flags, 0, 0)
+    sent = ctypes.windll.user32.SendInput(len(events), arr, ctypes.sizeof(INPUT))
+    if sent != len(events):
+        raise OSError(f"SendInput delivered {sent}/{len(events)} events (blocked by UIPI or another desktop)")
+
+
+def clipboard_type(text: str, platform: str, *, check_focus=None, unicode_sender=None) -> None:
+    """非 ASCII（中文）走剪贴板粘贴，避开输入法干扰（v0.1 在 Windows 上的做法，推广到三平台）。
+
+    v0.7：Windows 上 ASCII 也不再用虚拟键（会被中文输入法截进候选框），改为逐字符 KEYEVENTF_UNICODE。
+    """
     import pyautogui
+    if text.isascii() and platform == "windows":
+        send = unicode_sender or _win_send_unicode
+        for ch in text:
+            if check_focus is not None:
+                check_focus()
+            send(unicode_key_events(ch))
+        if check_focus is not None:
+            check_focus()
+        return
     if text.isascii():
         if check_focus is None:
             pyautogui.write(text, interval=0.01)

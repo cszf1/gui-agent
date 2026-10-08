@@ -274,3 +274,21 @@ def test_mcp_run_task_max_steps_does_not_leak_into_the_session(tmp_path, monkeyp
     srv.s.run_task("t", demo={"subgoals": []}, max_steps=3)
     assert seen[0]["agent"]["max_steps"] == 3
     assert (srv.s.cfg.get("agent") or {}) == before
+
+
+# ---------------------------------------------------------------- Windows 中文输入法
+def test_windows_ascii_typing_bypasses_the_ime(monkeypatch):
+    """pyautogui.write 发虚拟键，中文输入法处于中文模式时会把 abc 变成拼音候选；v0.7 改用 KEYEVENTF_UNICODE。"""
+    import sys
+    from fakes import fake_pyautogui
+    from gua.env.desktop import KEYEVENTF_UNICODE, clipboard_type, unicode_key_events
+    pg = fake_pyautogui()
+    monkeypatch.setitem(sys.modules, "pyautogui", pg)
+    sent = []
+    clipboard_type("ab", "windows", unicode_sender=sent.append)
+    assert not [c for c in pg.calls if c[0] == "write"]
+    assert [e[1] for batch in sent for e in batch if not e[2] & 2] == [ord("a"), ord("b")]
+    assert all(e[2] & KEYEVENTF_UNICODE for batch in sent for e in batch)
+    emoji = unicode_key_events("😀")
+    assert len(emoji) == 4 and {e[1] for e in emoji} == {0xD83D, 0xDE00}
+    assert unicode_key_events("\n")[0][0] == 0x0D

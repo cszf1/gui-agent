@@ -138,10 +138,12 @@ def test_windows_stops_ascii_input_immediately_when_an_input_event_moves_focus(m
     first, second = Control("Edit"), Control("Edit")
     first.HasKeyboardFocus, second.identity = True, (9, 8, 7)
     active, written = [first], []
-    def write(text, **kw):
-        written.append(text)
+    def send(events):
+        # v0.7: Windows ASCII goes through KEYEVENTF_UNICODE (IME-proof), not pyautogui.write.
+        written.append("".join(chr(scan) for vk, scan, flags in events if not flags & 2))
         active[0] = second
-    pg.write = write
+    import gua.env.desktop as desktop
+    monkeypatch.setattr(desktop, "_win_send_unicode", send)
     monkeypatch.setattr(win, "auto", SimpleNamespace(GetFocusedControl=lambda: active[0]))
     env = win.WindowsEnv.__new__(win.WindowsEnv)
     env.input = PyAutoGUIInput("windows", 1, type_fn=lambda text: clipboard_type(text, "windows", check_focus=env.input.focus_check))

@@ -5,7 +5,6 @@ import argparse
 import base64
 import hmac
 import json
-import mimetypes
 import os
 import secrets
 import sys
@@ -21,6 +20,20 @@ from urllib.request import ProxyHandler, Request, build_opener
 from .app_native import ChildJob, EdgeWindow, InstanceLock, StopShortcut
 from .app_storage import ACTIVE, AppStorage, dpapi, remove_owned, validate_settings
 from .app_worker import AppWorker
+
+
+# These are application-owned web assets. Windows MIME mappings can be changed
+# by other software (notably .js -> text/plain), which breaks module loading in
+# Edge with nosniff enabled. Never consult system mappings for this bundle.
+UI_CONTENT_TYPES = {
+    ".html": "text/html", ".htm": "text/html",
+    ".js": "text/javascript", ".mjs": "text/javascript",
+    ".css": "text/css", ".json": "application/json", ".map": "application/json",
+    ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+    ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
+    ".wasm": "application/wasm", ".txt": "text/plain",
+}
 
 
 def program_root():
@@ -266,7 +279,7 @@ class AppHandler(BaseHTTPRequestHandler):
         candidate = (self.server.ui_root / ("index.html" if path == "/" else path.lstrip("/"))).resolve()
         if not candidate.is_relative_to(self.server.ui_root) or not candidate.is_file():
             self.reply(404, dict(error="not found")); return
-        mime = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+        mime = UI_CONTENT_TYPES.get(candidate.suffix.lower(), "application/octet-stream")
         self.reply(200, candidate.read_bytes(), mime)
 
     def do_POST(self):

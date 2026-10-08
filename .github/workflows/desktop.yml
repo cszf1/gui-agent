@@ -48,6 +48,12 @@ jobs:
         working-directory: desktop
       - run: npm run dist:win
         working-directory: desktop
+      - name: Real Edge UI with incorrect system MIME mappings and embedded Python
+        working-directory: desktop
+        run: |
+          $env:GUI_AGENT_PYTHON = (Resolve-Path release/GUI-Agent/runtime/python.exe).Path
+          npm run test:e2e
+          if ($LASTEXITCODE -ne 0) { throw "Embedded Edge UI MIME regression failed" }
       - name: Real UIA with embedded Python
         run: '& .\release\GUI-Agent\runtime\python.exe -B scripts/smoke-windows-native.py'
         working-directory: desktop

@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-test('desktop UI drives Chromium, uses a configured API, confirms actions, pauses and stops', async ({ page }) => {
+test('desktop UI loads with incorrect system MIME mappings and executes verified tasks', async ({ page }) => {
   const directory = mkdtempSync(join(tmpdir(), 'gui-agent-e2e-'))
   const apiKey = 'desktop-test-key-not-a-real-credential'
   let mode = 'form'
@@ -52,7 +52,10 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
   })
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
   const port = (server.address() as { port: number }).port
-  const backend = spawn(process.env.GUI_AGENT_PYTHON || 'python', ['-B', '-u', '-m', 'gua.windows_app',
+  // Reproduce the Windows .js -> text/plain failure inside the backend process
+  // without changing the machine's registry or adding a production test flag.
+  const bootstrap = 'import mimetypes,runpy;mimetypes.guess_type=lambda *a,**k:("text/plain",None);mimetypes.guess_file_type=mimetypes.guess_type;runpy.run_module("gua.windows_app",run_name="__main__")'
+  const backend = spawn(process.env.GUI_AGENT_PYTHON || 'python', ['-B', '-u', '-c', bootstrap,
     '--serve-test', '--headless', '--data-dir', directory, '--ui-root', resolve('dist-ui')],
     { cwd: resolve('..'), env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
   const lines = createInterface({ input: backend.stdout })
@@ -61,6 +64,11 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
     backend.once('exit', () => fail(new Error('Backend exited during startup')))
   })
   try {
+    const assetTypes: Array<{ resource: string; mime: string }> = []
+    page.on('response', (response) => {
+      const path = new URL(response.url()).pathname
+      if (/\.(js|css)$/.test(path)) assetTypes.push({ resource: path, mime: response.headers()['content-type'] || '' })
+    })
     await page.goto(info.origin + '/#token=' + info.token)
     async function submitTask(task: string) {
       const count = await page.locator('.conversation-pair').count()
@@ -74,6 +82,11 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
     await expect(page.getByText('你想在电脑上完成什么？')).toBeVisible()
+    expect(assetTypes.some((asset) => asset.resource.endsWith('.js') && asset.mime.startsWith('text/javascript'))).toBe(true)
+    expect(assetTypes.some((asset) => asset.resource.endsWith('.css') && asset.mime.startsWith('text/css'))).toBe(true)
+    const initialSessions = (await page.evaluate(() => window.desktop.load())).sessions.length
+    await page.locator('button.new-session').click()
+    await expect(page.locator('.session-list button')).toHaveCount(initialSessions + 1)
     expect(await page.evaluate(() => 'require' in window)).toBe(false)
     expect(await page.evaluate(() => 'process' in window)).toBe(false)
     expect(await page.evaluate(() => 'invoke' in window.desktop || 'readFile' in window.desktop)).toBe(false)

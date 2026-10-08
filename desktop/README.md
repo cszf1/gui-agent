@@ -6,7 +6,7 @@ Windows x64 本机电脑操作助手。界面采用 React + TypeScript，由系�
 
 需要 Windows 10/11 x64 和已安装的 Microsoft Edge。无需另装 Python、Node.js 或浏览器，也无需管理员权限。
 
-1. 从 [GitHub Releases](https://github.com/cszf1/gui-agent/releases) 下载安装包并运行 `GUI-Agent-0.9.0-x64-Setup.exe`；也可从 [desktop app 工作流](https://github.com/cszf1/gui-agent/actions/workflows/desktop.yml) 的成功构建下载安装与便携附件。
+1. 从 [GitHub Releases](https://github.com/cszf1/gui-agent/releases) 下载安装包并运行 `GUI-Agent-0.9.1-x64-Setup.exe`；也可从 [desktop app 工作流](https://github.com/cszf1/gui-agent/actions/workflows/desktop.yml) 的成功构建下载安装与便携附件。
 2. 打开桌面或开始菜单的 GUI Agent，点击左下角模型设置，填写协议、Base URL、模型 ID 和 API Key。
 3. 点击“测试连接”，选择“本机桌面”或“独立浏览器”，保存后输入任务并按 Enter。连接测试会向所填模型服务发送一张生成的测试图片，按服务商规则计费。
 4. 在界面处理确认请求；可以暂停接管、继续或停止。Windows 紧急停止快捷键为 **Ctrl + Alt + Shift + Esc**；界面显示该快捷键是否注册成功。
@@ -61,7 +61,9 @@ npm test
 npm run dist:win
 ```
 
-生成 `desktop/release/GUI-Agent-0.9.0-x64-Setup.exe`、`GUI-Agent-0.9.0-x64-Portable.zip` 和 `build-manifest.json`。构建下载官方 Python 3.13.9 embedded ZIP 并校验固定 SHA-256，依赖按 `installer/requirements-windows.lock` 安装到内置 runtime。不执行 `playwright install chromium`。Playwright 自己的私有 Node 驱动随依赖保留，体积计入清单；它不提供 Electron 桌面壳。
+生成 `desktop/release/GUI-Agent-0.9.1-x64-Setup.exe`、`GUI-Agent-0.9.1-x64-Portable.zip` 和 `build-manifest.json`。构建下载官方 Python 3.13.9 embedded ZIP 并校验固定 SHA-256，依赖按 `installer/requirements-windows.lock` 安装到内置 runtime。不执行 `playwright install chromium`。Playwright 自己的私有 Node 驱动随依赖保留，体积计入清单；它不提供 Electron 桌面壳。
+
+v0.9.1 修复系统将 `.js` 识别成 `text/plain` 时 Edge 拒绝加载、窗口黑屏的问题。前端资源类型由程序固定，不读取或修改系统文件类型映射。已安装 v0.9.0 时，关闭软件后直接运行新版安装包，升级保留设置、密钥和历史。
 
 v0.9 默认只创建开始菜单快捷方式，桌面快捷方式需要勾选，只有一个 HKCU 卸载键。卸载先运行归属和链接防护，再按清单删除程序文件；用户自己放进去的文件会保留，因此可能保留非空程序目录。安装版所有软件用户数据随卸载删除。便携版解压后运行 `GUIAgent.exe`，数据在旁边的 `data` 目录，无安装注册表项；关闭后可以整体删除解压目录。
 

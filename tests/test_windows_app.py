@@ -155,6 +155,27 @@ def test_static_ui_is_csp_protected_and_paths_cannot_escape_the_bundle(app_http)
     assert app_http("/api/load", method="GET")[0] == 405
 
 
+@pytest.mark.parametrize(("suffix", "expected"), [
+    (".html", "text/html"), (".js", "text/javascript"), (".mjs", "text/javascript"),
+    (".JS", "text/javascript"), (".css", "text/css"), (".json", "application/json"),
+    (".svg", "image/svg+xml"), (".png", "image/png"), (".ico", "image/x-icon"),
+    (".woff2", "font/woff2"), (".wasm", "application/wasm"),
+    (".unknown", "application/octet-stream"),
+])
+def test_ui_content_types_ignore_incorrect_system_mappings(app_http, monkeypatch, suffix, expected):
+    import mimetypes
+    monkeypatch.setattr(mimetypes, "guess_type", lambda *args, **kwargs: ("text/plain", None))
+    monkeypatch.setattr(mimetypes, "guess_file_type", lambda *args, **kwargs: ("text/plain", None), raising=False)
+    asset = app_http.server.ui_root / ("asset" + suffix)
+    contents = b"application-owned resource\x00\xff"
+    asset.write_bytes(contents)
+    status, body, headers = app_http("/" + asset.name + "?v=091", method="GET")
+    assert status == 200 and body == contents
+    assert headers.get_content_type() == expected
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert "script-src 'self'" in headers["Content-Security-Policy"]
+
+
 def test_clear_requests_are_blocked_during_a_task_and_preserve_credentials_when_idle(app_http):
     controller = app_http.controller
     controller.storage.save_settings({**controller.storage.settings, "apiKey": "memory-key", "model": "vision"})

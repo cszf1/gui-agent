@@ -75,6 +75,8 @@ def main(argv=None) -> None:
     r.add_argument("--window", default="", help="任务窗口标题片段 / Android 包名 / 页面标题，用于焦点检查")
     r.add_argument("--url", help="web：起始页面（URL 或本地 HTML 路径）")
     r.add_argument("--app", help="android/desktop：先打开的应用")
+    r.add_argument("--resume", help="v0.6：从 runs/<run_id> 的 checkpoint.json 续跑（已完成子目标先重新验证）")
+    r.add_argument("--stream", action="store_true", help="v0.6：把清洗过的轨迹事件逐行输出到 stderr（JSONL）")
     common(r)
 
     e = sub.add_parser("eval", help="运行任务集并判分")
@@ -128,6 +130,13 @@ def main(argv=None) -> None:
     cfg = _load(a)
     if a.cmd == "run":
         text = a.task or a.instruction
+        resume = None
+        if a.resume:
+            cp_path = Path(a.resume) / "checkpoint.json"
+            if not cp_path.exists():
+                raise SystemExit(f"no checkpoint.json in {a.resume}")
+            resume = json.loads(cp_path.read_text(encoding="utf-8"))
+            text = text or resume.get("task")
         if not text:
             raise SystemExit("请用 --task 或位置参数给出任务描述")
         from .config import build_agent, build_env, resolve_platform
@@ -145,8 +154,11 @@ def main(argv=None) -> None:
                 else:
                     env.execute(Action("open_app", app=a.app))
             log = TrajectoryLogger(a.runs)
+            if a.stream:
+                log.subscribe(lambda ev: print(json.dumps(ev, ensure_ascii=False, default=str), file=sys.stderr,
+                                               flush=True))
             agent = build_agent(cfg, env, log, task_window=a.window)
-            res = agent.run(text)
+            res = agent.run(text, resume=resume)
             report = log.close()
         finally:
             env.close()

@@ -43,6 +43,18 @@ class TrajectoryLogger:
         self._meta: dict[str, Any] = {}
         from .sensitive import Scrubber
         self.scrubber = Scrubber()
+        # v0.6：流式轨迹事件订阅者（MCP 通知 / CLI --stream / 桌面 App）；收到的是已清洗的事件
+        self.listeners: list = []
+
+    def subscribe(self, fn) -> None:
+        self.listeners.append(fn)
+
+    def write_json(self, name: str, obj: Any) -> Path:
+        """写一个清洗过的 JSON 文件到运行目录（receipts.json / checkpoint.json）。"""
+        p = self.dir / name
+        p.write_text(json.dumps(self.scrubber.scrub_obj(obj), ensure_ascii=False, indent=2, default=_jsonable),
+                     encoding="utf-8")
+        return p
 
     def scrub(self, obj: Any) -> Any:
         return self.scrubber.scrub_obj(obj)
@@ -66,6 +78,11 @@ class TrajectoryLogger:
         line = json.dumps(clean_rec, ensure_ascii=False, default=_jsonable)
         self._f.write(line + "\n")
         self._f.flush()
+        for fn in list(self.listeners):
+            try:
+                fn(json.loads(line))
+            except Exception:  # noqa: BLE001  — 订阅者出错不影响执行
+                pass
 
     def meta(self, **meta: Any) -> None:
         self._meta.update(meta)

@@ -45,6 +45,7 @@ from .reflection import Reflector
 from .safety import SafetyGuard
 from .sensitive import (SECRET_RE, Scrubber, focus_target, is_password_el, is_sensitive_type, safe_view)
 from .verify import Check, Verdict, Verifier
+from .verify.receipts import make_receipt, summarize_postconditions
 
 TERMINAL_STATUSES = {"done", "fail", "uncertain", "step_limit", "budget_exhausted", "time_limit", "user_abort",
                      "privacy_blocked"}
@@ -124,6 +125,10 @@ class GUIAgent:
             recovery="none" if not recovery.enabled else "fixed_retry" if recovery.fixed_retry else "classified")
         self.step_no = 0
         self.receipts: list[dict] = []
+        self._sg_steps: list[dict] = []
+        self._last_goal: Optional[tuple] = None
+        self._done_ids: list[int] = []
+        self._subgoals: list = []
         self.before_step: list[StepHook] = []
         self._t0 = time.monotonic()
         self._answer = ""
@@ -399,10 +404,13 @@ class GUIAgent:
         return blocked
 
     # ------------------------------------------------------------------ main
-    def run(self, task: str) -> RunResult:
+    def run(self, task: str, resume: Optional[dict] = None) -> RunResult:
+        """resume：上一次运行的 checkpoint.json 内容。已完成的子目标先在当前屏幕上**重新验证**，
+        通过才跳过（凭据标注 re_verified_on_resume），否则从该子目标开始重新执行。"""
         self._t0 = time.monotonic()
         self.performance = Performance()
         self._replans = 0
+        self._resume = resume
         try:
             return self._run(task)
         except BudgetExceeded as e:
@@ -420,17 +428,56 @@ class GUIAgent:
                 self.log.step(kind="privacy_blocked", step=self.step_no, reason=str(e))
             return self._finish("privacy_blocked", False, self._replans, str(e))
 
+    def _resume_plan(self, obs: Observation) -> tuple[list, int]:
+        """按 checkpoint 恢复：子目标列表 + 第一个需要执行的下标（已完成的先重新验证）。"""
+        cp = self._resume or {}
+        subgoals = [Subgoal(**{k: v for k, v in d.items() if k in Subgoal.__dataclass_fields__})
+                    for d in cp.get("subgoals", [])]
+        done = set(cp.get("done_ids", []))
+        idx = 0
+        for sg in subgoals:
+            if sg.id not in done:
+                break
+            fobs, stable = self._settled_for_check(None)
+            with self.performance.measure("verify"):
+                c = self.verifier.check_goal(fobs, sg.goal, sg.evidence or sg.expected, sg.expect_text or None,
+                                             stable=stable, baseline=None)
+            if c.verdict != Verdict.SUCCESS:
+                if self.log:
+                    self.log.step(kind="resume_reverify_failed", subgoal=sg, evidence=self._scrub(c.evidence))
+                break
+            self._done_ids.append(sg.id)
+            self.receipts.append(make_receipt("subgoal", sg.goal, "re_verified_on_resume", c.level,
+                                              self._scrub(c.evidence), fobs, [],
+                                              {"subgoal_id": sg.id, "expect_text": sg.expect_text}))
+            idx += 1
+        return subgoals, idx
+
+    def _checkpoint(self, task: str) -> None:
+        if not self.log:
+            return
+        from dataclasses import asdict
+        self.log.write_json("checkpoint.json", {"task": task, "subgoals": [asdict(s) for s in self._subgoals],
+                                                "done_ids": list(self._done_ids), "step_no": self.step_no,
+                                                "replans": self._replans, "saved_at": time.time()})
+
     def _run(self, task: str) -> RunResult:
         self._replans = 0
         obs = self._observe()
         self._task_baseline = obs
-        with self.performance.measure("plan"):
-            subgoals = self.planner.plan(task, obs)
+        idx = 0
+        if getattr(self, "_resume", None) and self._resume.get("subgoals"):
+            subgoals, idx = self._resume_plan(obs)
+        else:
+            with self.performance.measure("plan"):
+                subgoals = self.planner.plan(task, obs)
+        self._subgoals = subgoals
+        self._task = task
         if self.log:
             self.log.meta(task_text=task, platform=self.cfg.platform, task_window=self.cfg.task_window,
-                          policy=self.policy.to_dict())
-            self.log.step(kind="plan", subgoals=subgoals)
-        idx, final_retries = 0, 0
+                          policy=self.policy.to_dict(), resumed=bool(getattr(self, "_resume", None)))
+            self.log.step(kind="plan", subgoals=subgoals, resumed_from=idx)
+        final_retries = 0
 
         while True:
             while idx < len(subgoals):
@@ -453,20 +500,29 @@ class GUIAgent:
                 rest = self.planner.replan(task, obs, sg, self._scrub(notes), self.mem.milestones_text(), sg.id,
                                            self._scrub(self.mem.notes_text()))
                 subgoals = subgoals[:idx] + rest
+                self._subgoals = subgoals
                 if self.log:
                     self.log.step(kind="replan", failed=sg, notes=notes, subgoals=rest)
 
             # 任务收尾核验：只看当前屏幕；聚合整个任务 + 全部子目标；明确 SUCCESS 才算完成
             if not self.cfg.final_check:
+                self.receipts.append(make_receipt("task", task, "unverified", "off", "final check disabled",
+                                                  None, []))
                 return self._finish("done", True, self._replans, "final check disabled")
             fobs, fstable = self._settled_for_check(self._task_baseline)
             with self.performance.measure("verify"):
                 final = self.verifier.check_final(fobs, task, subgoals, self.cfg.final_l2, stable=fstable,
-                                                  baseline=self._task_baseline)
+                                                  baseline=self._task_baseline,
+                                                  exempt_ids={r["subgoal_id"] for r in self.receipts
+                                                              if r.get("verdict") == "re_verified_on_resume"})
             final.evidence = self._scrub(final.evidence)
             if self.log:
                 self.log.step(kind="final_check", verdict=final.verdict, evidence=final.evidence, level=final.level,
                               signals=final.signals)
+            self.receipts.append(make_receipt(
+                "task", task, "verified_done" if final.verdict == Verdict.SUCCESS else final.verdict.value,
+                final.level, final.evidence, fobs, [],
+                {"subgoals": [r.get("subject") for r in self.receipts if r.get("kind") == "subgoal"]}))
             if final.verdict == Verdict.SUCCESS:
                 return self._finish("done", True, self._replans, "")
             status = "fail" if final.verdict == Verdict.FAILED else "uncertain"
@@ -484,6 +540,7 @@ class GUIAgent:
                                        self._scrub(self.mem.notes_text()))
             idx = len(subgoals)
             subgoals = subgoals + rest
+            self._subgoals = subgoals
             if self.log:
                 self.log.step(kind="replan", failed=failed, notes=note, subgoals=rest)
 
@@ -492,6 +549,7 @@ class GUIAgent:
         feedback, last_failure = "", None
         zoom_around = None
         self._sg_baseline = None
+        self._sg_steps = []
         actor_task = self._actor_task(task)
         for _ in range(self.cfg.max_steps_per_subgoal):
             lim = self._limit()
@@ -531,8 +589,17 @@ class GUIAgent:
                 if ok:
                     self._answer = action.text or self._answer
                     self.mem.add_milestone(Milestone(sg.id, sg.goal, ev, time.time(), self._observe(False).screenshot))
+                    gc, gobs = self._last_goal or (None, None)
+                    receipt = make_receipt("subgoal", sg.goal, "verified_done" if self.cfg.verify_goals else "unverified",
+                                           gc.level if gc is not None else "off", ev, gobs, self._sg_steps,
+                                           {"subgoal_id": sg.id, "expect_text": sg.expect_text,
+                                            "signals": self.scrubber.scrub_obj(dict(gc.signals)) if gc is not None else {}})
+                    self.receipts.append(receipt)
+                    self._done_ids.append(sg.id)
+                    self._checkpoint(task)
                     if self.log:
                         self.log.step(kind="milestone", subgoal=sg, evidence=ev, answer=action.text)
+                        self.log.step(kind="receipt", receipt=receipt)
                     return "done", ev
                 feedback = f"You said the sub-goal is done, but verification disagrees: {ev}"
                 self.mem.add_step(StepRecord(self.step_no, sg.id, "done", "rejected", ev))
@@ -665,9 +732,18 @@ class GUIAgent:
         with self.performance.measure("verify"):
             c: Check = self.verifier.check_goal(obs, sg.goal, sg.evidence or sg.expected, sg.expect_text or None,
                                                 stable=stable, baseline=self._sg_baseline)
+        self._last_goal = (c, obs)
         return c.verdict == Verdict.SUCCESS, self._scrub(f"[{c.level}] {c.evidence}")
 
     def _log_step(self, rec: StepRecord, before, after, action_view: dict, src, check: Check, thought: str) -> None:
+        sig = check.signals or {}
+        self._sg_steps.append({"step": rec.step, "action": action_view, "verdict": rec.verdict, "level": check.level,
+                               "modality": sig.get("modality", "gui" if rec.action.startswith("{") else "control"),
+                               "route": sig.get("execution_route", ""),
+                               "background": sig.get("background", False),
+                               "fallback": sig.get("fallback_reason", ""),
+                               "postconditions": summarize_postconditions(sig.get("postconditions")),
+                               "recovery": rec.recovery or ""})
         if not self.log:
             return
         self.log.step(kind="step", step=rec.step, subgoal=rec.subgoal_id, thought=self._scrub(thought),
@@ -689,6 +765,9 @@ class GUIAgent:
                       self.scrubber.scrub_obj(list(self.receipts)))
         if self.log:
             self.log.meta(result=r)
+            self.log.write_json("receipts.json", r.receipts)
+            if getattr(self, "_task", None) is not None:
+                self._checkpoint(self._task)
         return r
 
 

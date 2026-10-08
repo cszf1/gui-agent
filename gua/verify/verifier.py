@@ -374,7 +374,8 @@ class Verifier:
         return c
 
     def check_final(self, obs: Observation, task: str, subgoals: list, final_l2: str = "when_needed",
-                    stable: bool = True, baseline: Optional[Observation] = None) -> Check:
+                    stable: bool = True, baseline: Optional[Observation] = None,
+                    exempt_ids: Optional[set] = None) -> Check:
         """任务收尾核验（只看当前屏幕）。
 
         1) 规则：每个带 expect_text 且 persistent 的子目标，其文字现在必须仍在屏幕/无障碍树中（零模型调用）；
@@ -400,7 +401,9 @@ class Verifier:
                 return Check(Verdict.FAILED, f"no longer true on the current screen: {desc}", "final-L1",
                              {"failed_subgoals": [sg.id for sg in gone]})
             if baseline is not None:            # 旧证据：任务开始时就在、之后没有实质替换 → 不参与 L1 成功
-                stale_sgs = [sg for sg in checkable if self._stale_evidence(baseline, obs, sg.expect_text)]
+                # v0.6：断点续跑时，上一次运行已证实、本次开头又重新核验过的子目标不按“本次基线”判旧证据
+                stale_sgs = [sg for sg in checkable if sg.id not in (exempt_ids or set())
+                             and self._stale_evidence(baseline, obs, sg.expect_text)]
                 proven = [sg for sg in checkable if sg not in stale_sgs]
             if subgoals and len(proven) == len(subgoals) and final_l2 != "always":
                 return Check(Verdict.SUCCESS, f"all {len(subgoals)} sub-goal expectations visible now", "final-L1")

@@ -65,3 +65,16 @@ def test_cli_doctor_and_replay(tmp_path, capsys):
     log.close(report=False)
     main(["replay", str(tmp_path / "r2")])
     assert (tmp_path / "r2" / "report.html").exists()
+
+
+def test_cli_demo_runs_scripted_web_tasks_without_eval_only_options(tmp_path, monkeypatch, capsys):
+    import gua.eval.runner
+    calls = []
+    def run(cfg, tasks, runs, repeats, disturbance, tag, policy, platform):
+        calls.append((tasks, policy, platform))
+        return {"_file": "demo-summary.json"}
+    monkeypatch.setattr(gua.eval.runner, "run_suite", run)
+    main(["demo", "--runs", str(tmp_path)])
+    assert calls[0][1:] == ("scripted", "web")
+    assert len(calls[0][0]) >= 6
+    assert "summary file: demo-summary.json" in capsys.readouterr().out

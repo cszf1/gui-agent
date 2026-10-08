@@ -46,6 +46,10 @@ Linux RemoteEnv、Docker 沙盒和 MCP 是可选的开发与评测能力，不�
 资源限制修订后的相关回归为 **65 passed**，包含新增继承上限用例；该用例先在旧实现上复现启动失败，再验证修订通过。
 Windows 后台 SelectionItem 检查增加 Free → Pro 的真实状态切换，避免仅验证已经选中的控件。
 
+最终 CI 还发现 `gua demo` 的命名空间没有 `eval --workers` 参数；串行默认值已修正，新增 CLI 回归为 5 passed，
+真实 `gua demo` 六任务全部通过且虚假完成为 0。Electron E2E 原来可能在新任务创建前读到历史任务的完成状态；
+现在等待新会话任务条目出现，并将后续状态断言绑定到该任务。修订后的真实 E2E 完整通过（1 passed）。
+
 ## 修订后基准
 
 原始附件的 `modalities-2026-10-08.json` 保留为审查前数据。

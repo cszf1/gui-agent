@@ -183,7 +183,7 @@ def main(argv=None) -> None:
         if not tasks:
             raise SystemExit(f"no tasks found in {a.tasks}")
         plat = a.platform if a.platform and a.platform != "auto" else None
-        if getattr(a, "workers", 1) and a.workers > 1:
+        if getattr(a, "workers", 1) > 1:
             from .eval.runner import run_suite_parallel
             s = run_suite_parallel(cfg, tasks, a.runs, a.repeats, not a.no_disturb, a.tag, a.policy, platform=plat,
                                    workers=a.workers)

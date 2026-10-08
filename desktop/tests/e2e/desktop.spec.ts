@@ -56,6 +56,15 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
   })
   try {
     const page = await electronApp.firstWindow()
+    async function submitTask(task: string) {
+      const count = await page.locator('.conversation-pair').count()
+      await page.getByLabel('输入任务', { exact: true }).fill(task)
+      await page.getByRole('button', { name: '执行任务', exact: true }).click()
+      // IPC creates the new run asynchronously. The previous run can still
+      // say "done" immediately after clicking; bind assertions to this run.
+      await expect(page.locator('.conversation-pair')).toHaveCount(count + 1)
+      return page.locator('.conversation-pair').nth(count)
+    }
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
     await expect(page.getByText('你想在电脑上完成什么？')).toBeVisible()
@@ -97,9 +106,8 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
     expect(JSON.stringify(publicState)).not.toContain(apiKey)
     expect(readFileSync(join(directory, 'state.json'), 'utf8')).not.toContain(apiKey)
 
-    await page.getByLabel('输入任务', { exact: true }).fill('填写姓名 Alice 和邮箱 alice@example.com，选择 Pro、订阅并提交')
-    await page.getByRole('button', { name: '执行任务', exact: true }).click()
-    await expect(page.locator('.status-badge').last()).toHaveText('已完成', { timeout: 60000 })
+    const formRun = await submitTask('填写姓名 Alice 和邮箱 alice@example.com，选择 Pro、订阅并提交')
+    await expect(formRun.locator('.status-badge')).toHaveText('已完成', { timeout: 60000 })
     expect(requests.length).toBeGreaterThan(3)
     expect(requests.every((request) => request.path === '/v1/chat/completions' && request.auth === `Bearer ${apiKey}`)).toBe(true)
     expect(requests.some((request) => request.images > 0)).toBe(true)
@@ -112,28 +120,25 @@ test('desktop UI drives Chromium, uses a configured API, confirms actions, pause
     await page.getByLabel('起始网页', { exact: true }).fill(sendPage)
     await page.getByRole('button', { name: '保存设置' }).click()
     await expect(page.getByRole('dialog', { name: '模型与执行设置' })).toBeHidden()
-    await page.getByLabel('输入任务', { exact: true }).fill('发送按钮测试：点击 Send')
-    await page.getByRole('button', { name: '执行任务', exact: true }).click()
+    const refusedRun = await submitTask('发送按钮测试：点击 Send')
     await expect(page.getByText('需要你的确认', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '拒绝', exact: true }).click()
-    await expect(page.locator('.status-badge').last()).toHaveText('未完成')
-    await page.getByLabel('输入任务', { exact: true }).fill('发送按钮测试：点击 Send')
-    await page.getByRole('button', { name: '执行任务', exact: true }).click()
+    await expect(refusedRun.locator('.status-badge')).toHaveText('未完成')
+    const approvedRun = await submitTask('发送按钮测试：点击 Send')
     await expect(page.getByText('需要你的确认', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '允许这次操作' }).click()
-    await expect(page.locator('.status-badge').last()).toHaveText('已完成')
+    await expect(approvedRun.locator('.status-badge')).toHaveText('已完成')
 
     // Pause during an in-flight model request, then release the request. A paused
     // worker must not execute its pending action and can be stopped from the UI.
-    await page.getByLabel('输入任务', { exact: true }).fill('等待测试：暂不操作界面')
-    await page.getByRole('button', { name: '执行任务', exact: true }).click()
+    const pausedRun = await submitTask('等待测试：暂不操作界面')
     await expect.poll(() => plannerWaiting).toBe(true)
     await page.getByRole('button', { name: '暂停 / 接管' }).click()
-    await expect(page.locator('.status-badge').last()).toHaveText('正在暂停')
+    await expect(pausedRun.locator('.status-badge')).toHaveText('正在暂停')
     releasePlanner!()
-    await expect(page.locator('.status-badge').last()).toHaveText('已暂停')
+    await expect(pausedRun.locator('.status-badge')).toHaveText('已暂停')
     await page.getByRole('button', { name: '停止', exact: true }).click()
-    await expect(page.locator('.status-badge').last()).toHaveText('已停止')
+    await expect(pausedRun.locator('.status-badge')).toHaveText('已停止')
     expect(errors).toEqual([])
   } finally {
     releasePlanner?.()

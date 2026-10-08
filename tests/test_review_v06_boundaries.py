@@ -293,7 +293,10 @@ result = run_bounded([sys.executable, '-c',
 assert result.returncode == 0, result.stderr
 assert result.stdout.strip() == '(1024, 1024)', result.stdout
 """
-    result = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=dict(os.environ),
+    # v0.7: the child must import this checkout, not an installed copy (or none).
+    root = str(__import__("pathlib").Path(__file__).resolve().parents[1])
+    child_env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [root, os.environ.get("PYTHONPATH")])))
+    result = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=child_env,
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
 

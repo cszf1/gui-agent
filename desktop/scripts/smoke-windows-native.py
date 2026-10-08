@@ -132,11 +132,13 @@ def check_native():
             assert result.ok and result.route == "windows_input", result
             wait_for(lambda row: row.get("name") == text)
             input_routes.append(result.route)
-            routes = []
+            routes, timings = [], {}
             for name, route in [("Subscribe", "uia_toggle"), ("Pro", "uia_select"), ("Continue", "uia_invoke")]:
                 obs = agent._observe()
                 action, _ = agent._resolve(Action("click", target=name), obs)
+                started = time.perf_counter()
                 result = agent._execute_gated(action, obs)
+                timings[route] = round(time.perf_counter() - started, 4)
                 assert result.ok and result.route == route, (result, name)
                 routes.append(result.route)
             actual = wait_for(lambda row: row.get("clicks") == 1 and row.get("checked") and row.get("selected"))
@@ -166,6 +168,7 @@ def check_native():
                 background_routes.append(result.route)
             print("Real Windows WinForms/UIA outcomes verified: native ASCII + Chinese replacement, keyboard fallback, toggle, select, invoke.")
             print(json.dumps({"input_routes": input_routes, "routes": routes, "background_routes": background_routes,
+                              "native_action_seconds": timings,
                               "outcome": wait_for(lambda row: row.get("clicks") == 2)}, ensure_ascii=True))
         finally:
             if env is not None:

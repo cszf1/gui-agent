@@ -180,12 +180,23 @@ class HybridExecutor:
 
     def _effect(self, a: Action, before: Observation) -> tuple[Optional[bool], str]:
         """(True=有生效证据 | False=明确未生效 | None=无法判断, 证据)。"""
-        time.sleep(self.cfg.settle)
+        preds = list(a.expect) + implied_postconditions(a, before)
+        if preds:
+            # Synchronous Value/Toggle patterns and DOM writes often satisfy
+            # their exact postconditions immediately. A miss is not failure:
+            # allow the original settling interval before a final check.
+            try:
+                immediate = self.observe()
+                rep = evaluate(preds, before, immediate)
+                if rep.verdict == "success":
+                    return True, rep.evidence()
+            except Exception:
+                pass
+        time.sleep(max(0, self.cfg.settle))
         try:
             after = self.observe()
         except Exception as e:  # noqa: BLE001
             return None, f"re-observe failed ({type(e).__name__})"
-        preds = list(a.expect) + implied_postconditions(a, before)
         if preds:
             rep = evaluate(preds, before, after)
             if rep.verdict == "success":

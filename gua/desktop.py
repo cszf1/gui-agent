@@ -82,7 +82,8 @@ def desktop_config(settings: dict, *, demo: bool = False, headless: bool = False
         raise ValueError("无效的确认模式")
     overrides = {"env": {"platform": platform, "web": {"headless": headless}},
                  "agent": {"max_steps": steps}, "safety": {"mode": safety},
-                 "grounding": {"coord": "norm1000"}}
+                 "grounding": {"coord": "norm1000", "refine": True, "min_confidence": 0.75},
+                 "actor": {"som": True}}
     if sys.platform == "win32":
         # Desktop releases use the installed system Edge, never download Chromium.
         overrides["env"]["web"]["channel"] = "msedge"

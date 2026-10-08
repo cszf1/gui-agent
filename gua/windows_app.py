@@ -271,8 +271,11 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         origin = self.headers.get("Origin")
+        site = self.headers.get("Sec-Fetch-Site")
         token = self.headers.get("X-Gua-Control", "")
-        if not self.host_ok() or (origin and origin != self.server.origin) or not hmac.compare_digest(token.encode(), self.server.token.encode()):
+        if (not self.host_ok() or (origin and origin != self.server.origin)
+                or site not in {None, "same-origin", "none"}
+                or not hmac.compare_digest(token.encode(), self.server.token.encode())):
             self.reply(403, dict(error="请求未通过本机应用认证")); return
         try:
             self.connection.settimeout(5)

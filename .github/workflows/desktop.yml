@@ -1,9 +1,9 @@
 name: desktop app
 on:
   push:
-    paths: ['desktop/**', 'gua/**', 'configs/**', 'tasks/**', 'pyproject.toml', 'scripts/install-playwright-ci.sh', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', 'gua/**', 'configs/**', 'tasks/**', 'tests/**', 'pyproject.toml', 'scripts/install-playwright-ci.sh', '.github/workflows/desktop.yml']
   pull_request:
-    paths: ['desktop/**', 'gua/**', 'configs/**', 'tasks/**', 'pyproject.toml', 'scripts/install-playwright-ci.sh', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', 'gua/**', 'configs/**', 'tasks/**', 'tests/**', 'pyproject.toml', 'scripts/install-playwright-ci.sh', '.github/workflows/desktop.yml']
   workflow_dispatch:
 jobs:
   desktop-tests:
@@ -15,6 +15,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: pip install -e ".[web,dev]"
+      - run: python -B -m pytest -p no:cacheprovider -q tests/test_slim_packaging.py tests/test_fast_precision.py
       - name: Install Chromium and system dependencies
         run: bash scripts/install-playwright-ci.sh
         timeout-minutes: 10
@@ -31,6 +32,8 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: desktop-tests
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,10 +54,29 @@ jobs:
       - name: Install, system Edge UI, run, upgrade and clean uninstall
         run: python scripts/smoke-windows-installer.py
         working-directory: desktop
+      - name: Portable launcher, real Edge UI, embedded task and encrypted restart
+        run: python scripts/smoke-windows-portable.py
+        working-directory: desktop
       - uses: actions/upload-artifact@v4
         with:
           name: GUI-Agent-Windows-Installer
           path: |
             desktop/release/*-Setup.exe
+            desktop/release/*-Portable.zip
             desktop/release/build-manifest.json
           if-no-files-found: error
+      - name: Prepare a draft release after Windows verification
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $tag = "v$version"
+          gh release view $tag --json url 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            $setup = (Get-ChildItem release/*-Setup.exe).FullName
+            $portable = (Get-ChildItem release/*-Portable.zip).FullName
+            gh release create $tag $setup $portable release/build-manifest.json --target "${{ github.sha }}" --draft --title "GUI Agent $version" --notes-file "../docs/releases/$tag.md"
+            if ($LASTEXITCODE -ne 0) { throw "Draft release upload failed" }
+          }

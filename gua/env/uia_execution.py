@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import re
+import inspect
 from dataclasses import dataclass
 
 from .a11y import uia_raw
@@ -18,6 +19,21 @@ def runtime_id(control) -> tuple:
         return tuple(control.GetRuntimeId())
     except Exception:
         return ()
+
+
+def immediate_call(operation):
+    """Remove UIAutomation's default sleep without retrying an activation.
+
+    Inspect before dispatch: catching TypeError and calling again could replay
+    an operation that already took effect. Unknown providers keep their API.
+    """
+    try:
+        parameter = inspect.signature(operation).parameters.get("waitTime")
+    except (TypeError, ValueError):
+        parameter = None
+    if parameter is not None and parameter.kind in {parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY}:
+        return operation(waitTime=0)
+    return operation()
 
 
 @dataclass
@@ -61,13 +77,13 @@ Unknown identity, changed semantics or state refuse without attempting input.
         elif expected.role == "textbox":
             # Focus only. Payload replacement has its own consent/focus gate.
             route = "uia_focus"
-            if ctrl.SetFocus() is False:
+            if immediate_call(ctrl.SetFocus) is False:
                 return ExecResult(False, "native_action_error: focus was not acknowledged; observe again",
                                   started, time.time(), route=route), None
             return ExecResult(True, "", started, time.time(), route=route), None
         if pattern is not None:
             try:
-                if getattr(pattern, method)() is False:
+                if immediate_call(getattr(pattern, method)) is False:
                     return ExecResult(False, "native_action_error: action was not acknowledged; effect uncertain, do not replay",
                                       started, time.time(), route=route), None
             except Exception as exc:
@@ -199,7 +215,7 @@ def semantic_control(bound: ObservedControl, method: str, text: str | None = Non
             return ExecResult(True, "", started, time.time(), route=route)
         if method == "focus":
             attempted = True
-            if ctrl.SetFocus() is False:
+            if immediate_call(ctrl.SetFocus) is False:
                 return ExecResult(False, "native_action_error: focus not acknowledged", started, time.time(),
                                   route=route)
             return ExecResult(True, "", started, time.time(), route=route)
@@ -212,7 +228,7 @@ def semantic_control(bound: ObservedControl, method: str, text: str | None = Non
             return ExecResult(False, f"background_unavailable: control exposes no {call} pattern", started,
                               time.time(), route=route)
         attempted = True
-        if getattr(pattern, call)() is False:
+        if immediate_call(getattr(pattern, call)) is False:
             return ExecResult(False, "native_action_error: action was not acknowledged; effect uncertain, do not "
                               "replay", started, time.time(), route=route)
         return ExecResult(True, "", started, time.time(), route=route)

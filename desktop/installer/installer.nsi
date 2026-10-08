@@ -11,6 +11,7 @@ Icon "${ICON}"
 UninstallIcon "${ICON}"
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -43,20 +44,27 @@ Function .onInit
 FunctionEnd
 
 Section "GUI Agent"
+  SectionIn RO
   SetShellVarContext current
   SetRegView 64
   SetOutPath "$INSTDIR"
   File /r "${PAYLOAD}\*.*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  CreateShortcut "$DESKTOP\GUI Agent.lnk" "$INSTDIR\GUIAgent.exe"
   CreateShortcut "$SMPROGRAMS\GUI Agent.lnk" "$INSTDIR\GUIAgent.exe"
-  WriteRegStr HKCU "Software\cszf1\GUI Agent" "InstallDir" "$INSTDIR"
+  ; Remove the redundant application key left by v0.8 upgrades.
+  DeleteRegKey HKCU "Software\cszf1\GUI Agent"
+  DeleteRegKey /ifempty HKCU "Software\cszf1"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "DisplayName" "GUI Agent"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "NoRepair" 1
+SectionEnd
+
+Section /o "桌面快捷方式"
+  SetShellVarContext current
+  CreateShortcut "$DESKTOP\GUI Agent.lnk" "$INSTDIR\GUIAgent.exe"
 SectionEnd
 
 Section "Uninstall"
@@ -74,5 +82,9 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\cszf1\GUI Agent"
   DeleteRegKey /ifempty HKCU "Software\cszf1"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent"
-  RMDir /r "$INSTDIR"
+  ; app_cleanup has stopped the backend and removed junctions before any
+  ; Delete operation. Preserve user-added files by removing only our manifest.
+  !include "${MANIFEST_DIR}\files_uninstall.nsh"
+  Delete "$INSTDIR\Uninstall.exe"
+  RMDir "$INSTDIR"
 SectionEnd

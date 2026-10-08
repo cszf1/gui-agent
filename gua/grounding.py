@@ -43,6 +43,32 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", "", s or "").lower()
 
 
+_ROLE_WORDS = {
+    "button": "button", "按钮": "button", "link": "link", "链接": "link",
+    "checkbox": "checkbox", "check box": "checkbox", "复选框": "checkbox",
+    "textbox": "textbox", "text box": "textbox", "field": "textbox",
+    "input": "textbox", "输入框": "textbox", "文本框": "textbox",
+    "tab": "tab", "标签页": "tab", "radio button": "radio", "单选框": "radio",
+    "menu item": "menuitem", "菜单项": "menuitem",
+}
+
+
+def qualified_target(target: str):
+    """Recognize an explicit role plus a name; do not guess synonyms."""
+    target = (target or "").strip()
+    for word in sorted(_ROLE_WORDS, key=len, reverse=True):
+        escaped = re.escape(word)
+        separator = r"\s+" if word.isascii() else r"\s*"
+        match = re.fullmatch(r"(.+?)" + separator + escaped, target, re.I)
+        if match is None:
+            match = re.fullmatch(escaped + r"\s*[:：]\s*(.+)", target, re.I)
+        if match:
+            name = match[1].strip(" \t\"'“”「」")
+            if name:
+                return name, _ROLE_WORDS[word]
+    return None
+
+
 class Grounder:
     def __init__(self, llm, mapper: CoordMapper, use_a11y: bool = True, zoom_factor: float = 2.5,
                  prompt: str = GROUND_PROMPT, platform_desc: str = "a computer screen", fuzzy: bool = True,
@@ -67,6 +93,9 @@ class Grounder:
         if element_id is not None:
             e = obs.element(element_id)
             if e and e.enabled:
+                qualified = qualified_target(target)
+                if qualified and (e.role != qualified[1] or _norm(e.name) != _norm(qualified[0])):
+                    return None
                 return e, "a11y"
             return None  # An invalid explicit ID must not select another same-name control.
         t = _norm(target)
@@ -78,6 +107,13 @@ class Grounder:
             return exact[0], "a11y"
         if exact:
             return None  # 多个同名 → 交给视觉，避免身份失配
+        qualified = qualified_target(target)
+        if qualified:
+            name, role = qualified
+            exact_role = [e for e in cands if e.role == role and _norm(e.name) == _norm(name)]
+            # A role-qualified description only takes the shortcut when both
+            # the role and complete label agree, and the result is unique.
+            return (exact_role[0], "a11y") if len(exact_role) == 1 else None
         if self.fuzzy and len(t) >= 3:
             part = [e for e in cands if e.name and (t in _norm(e.name) or _norm(e.name) in t) and len(_norm(e.name)) >= 3]
             if len(part) == 1:

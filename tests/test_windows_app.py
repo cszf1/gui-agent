@@ -122,10 +122,11 @@ def app_http(tmp_path):
     server = AppServer(controller, assets, token="test-control-token")
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    def call(path, body=None, *, token=server.token, origin=None, host=None, method="POST"):
+    def call(path, body=None, *, token=server.token, origin=None, host=None, site=None, method="POST"):
         headers = {"Content-Type": "application/json", "X-Gua-Control": token}
         if origin: headers["Origin"] = origin
         if host: headers["Host"] = host
+        if site: headers["Sec-Fetch-Site"] = site
         req = urllib.request.Request(server.origin + path, data=json.dumps(body or {}).encode() if method == "POST" else None,
                                      headers=headers, method=method)
         try:
@@ -141,6 +142,9 @@ def test_loopback_control_rejects_missing_tokens_cross_site_requests_and_rebindi
     assert app_http("/api/load", origin="https://attacker.example")[0] == 403
     assert app_http("/api/load", host="attacker.example")[0] == 403
     assert app_http("/api/load", origin=app_http.server.origin)[0] == 200
+    assert app_http("/api/load", site="cross-site")[0] == 403
+    assert app_http("/api/load", site="same-site")[0] == 403
+    assert app_http("/api/load", site="same-origin")[0] == 200
 
 
 def test_static_ui_is_csp_protected_and_paths_cannot_escape_the_bundle(app_http):

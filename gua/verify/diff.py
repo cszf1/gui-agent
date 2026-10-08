@@ -1,19 +1,29 @@
-"""廉价的像素级变化检测：先用规则筛掉大部分情况，再决定要不要花一次 VLM 调用。"""
+"""廉价的像素级变化检测：先用规则筛掉大部分情况，再决定要不要花一次 VLM 调用。
+
+v0.9：只用 Pillow 实现（原 numpy 版本按 |a-b|/255 > 0.08 计数，等价于 8 位灰度差 >= 21），
+桌面安装包因此不再携带 numpy。
+"""
 from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
-from PIL import Image
+from PIL import Image, ImageChops
+
+# |a - b| / 255 > 0.08  <=>  |a - b| > 20.4  <=>  |a - b| >= 21（8 位整数灰度）
+_THRESHOLD = 21
+_LUT = [0] * _THRESHOLD + [255] * (256 - _THRESHOLD)
 
 
-def _arr(img: Image.Image, size=(320, 200)) -> np.ndarray:
-    return np.asarray(img.convert("L").resize(size), dtype=np.float32) / 255.0
+def _changed_ratio(a: Image.Image, b: Image.Image) -> float:
+    diff = ImageChops.difference(a, b).point(_LUT)
+    total = diff.size[0] * diff.size[1]
+    return diff.histogram()[255] / total if total else 0.0
 
 
 def frame_diff(a: Image.Image, b: Image.Image) -> float:
     """全图平均差异比例（0~1）。"""
-    return float(np.mean(np.abs(_arr(a) - _arr(b)) > 0.08))
+    size = (320, 200)
+    return _changed_ratio(a.convert("L").resize(size), b.convert("L").resize(size))
 
 
 def region_diff(a: Image.Image, b: Image.Image, center: tuple[int, int], radius: int = 120) -> float:
@@ -23,9 +33,7 @@ def region_diff(a: Image.Image, b: Image.Image, center: tuple[int, int], radius:
     box = (max(0, x - radius), max(0, y - radius), min(w, x + radius), min(h, y + radius))
     if box[2] <= box[0] or box[3] <= box[1]:
         return 0.0
-    ra = np.asarray(a.convert("L").crop(box), dtype=np.float32) / 255.0
-    rb = np.asarray(b.convert("L").crop(box), dtype=np.float32) / 255.0
-    return float(np.mean(np.abs(ra - rb) > 0.08))
+    return _changed_ratio(a.convert("L").crop(box), b.convert("L").crop(box))
 
 
 def region_crop_diff(a: Image.Image, b: Image.Image, box) -> float:
@@ -35,9 +43,7 @@ def region_crop_diff(a: Image.Image, b: Image.Image, box) -> float:
     l, t, r, bt = max(0, l), max(0, t), min(w, r), min(h, bt)
     if r <= l or bt <= t:
         return 0.0
-    ra = np.asarray(a.convert("L").crop((l, t, r, bt)), dtype=np.float32) / 255.0
-    rb = np.asarray(b.convert("L").crop((l, t, r, bt)), dtype=np.float32) / 255.0
-    return float(np.mean(np.abs(ra - rb) > 0.08))
+    return _changed_ratio(a.convert("L").crop((l, t, r, bt)), b.convert("L").crop((l, t, r, bt)))
 
 
 def side_by_side(before: Image.Image, after: Image.Image, mark: Optional[tuple[int, int]] = None,

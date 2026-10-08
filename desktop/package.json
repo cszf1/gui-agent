@@ -1,6 +1,6 @@
 {
   "name": "gui-agent-desktop",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "System Edge UI for a local embedded-Python agent",

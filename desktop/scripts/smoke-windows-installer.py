@@ -95,7 +95,8 @@ def main():
             subprocess.run([str(setup), "/S"], check=True, timeout=120)
             installed = True
             assert (PROGRAM / "GUIAgent.exe").is_file() and (PROGRAM / "runtime/python313._pth").is_file()
-            assert all(p.is_file() for p in links) and all(registry_exists(k) for k in KEYS)
+            assert not links[0].exists() and links[1].is_file(), "Desktop shortcut must be opt-in"
+            assert not registry_exists(KEYS[0]) and registry_exists(KEYS[1])
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, KEYS[1]) as key:
                 command = '"' + str(PROGRAM / "Uninstall.exe") + '"'
                 assert winreg.QueryValueEx(key, "UninstallString")[0] == command
@@ -164,8 +165,16 @@ def main():
             subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(PROGRAM / "dangling-link"), str(vanished)],
                            check=True, stdout=subprocess.DEVNULL)
             vanished.rmdir()
+            foreign = PROGRAM / "user-added-document.txt"
+            foreign.write_text("user-added file must survive", encoding="utf-8")
             subprocess.run([str(PROGRAM / "Uninstall.exe"), "/S"], check=True, timeout=120)
             backend.wait(timeout=25); backend = None
+            wait_for(lambda: not (PROGRAM / "runtime").exists() and not (PROGRAM / "Uninstall.exe").exists(),
+                     "manifest uninstall completion", 30)
+            assert foreign.read_text(encoding="utf-8") == "user-added file must survive"
+            assert list(PROGRAM.iterdir()) == [foreign], "Application files remained after manifest uninstall"
+            # The only remaining file belongs to this harness, not the app.
+            foreign.unlink(); PROGRAM.rmdir()
             wait_for(lambda: not PROGRAM.exists(), "program directory deletion", 30)
             assert not DATA.exists(), "User data remained after uninstall"
             assert not any(registry_exists(k) for k in KEYS), "Registry keys remained"
@@ -175,7 +184,7 @@ def main():
             installed = False
             print(json.dumps(dict(systemEdgeUI=True, embeddedPythonTask=True, dpapiKey=True, noDefaultScreenshots=True,
                 cleanExit=True, crashChildrenStopped=True, upgradePreservedData=True, cleanUninstall=True, externalDocumentsPreserved=True,
-                unrelatedEdgePreserved=True, noBrowserDownload=True, programDirectoryUnchanged=True)))
+                unrelatedEdgePreserved=True, userAddedFilesPreserved=True, noBrowserDownload=True, programDirectoryUnchanged=True)))
         finally:
             if installed and (PROGRAM / "Uninstall.exe").exists():
                 subprocess.run([str(PROGRAM / "Uninstall.exe"), "/S"], timeout=120)

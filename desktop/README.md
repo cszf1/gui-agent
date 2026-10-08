@@ -1,4 +1,4 @@
-# GUI Agent 桌面 App v0.8
+# GUI Agent 桌面 App v0.9
 
 Windows x64 本机电脑操作助手。界面采用 React + TypeScript，由系统 Microsoft Edge 的独立 App 窗口打开；引擎使用安装包内的嵌入式 Python。浏览器任务也使用系统 Edge，不再捆绑 Electron 或 Chromium。
 
@@ -6,13 +6,13 @@ Windows x64 本机电脑操作助手。界面采用 React + TypeScript，由系�
 
 需要 Windows 10/11 x64 和已安装的 Microsoft Edge。无需另装 Python、Node.js 或浏览器，也无需管理员权限。
 
-1. 从 [desktop app 工作流](https://github.com/cszf1/gui-agent/actions/workflows/desktop.yml) 的成功构建下载 **GUI-Agent-Windows-Installer**，解压并运行 `GUI-Agent-0.8.0-x64-Setup.exe`。
+1. 从 [GitHub Releases](https://github.com/cszf1/gui-agent/releases) 下载安装包并运行 `GUI-Agent-0.9.0-x64-Setup.exe`；也可从 [desktop app 工作流](https://github.com/cszf1/gui-agent/actions/workflows/desktop.yml) 的成功构建下载安装与便携附件。
 2. 打开桌面或开始菜单的 GUI Agent，点击左下角模型设置，填写协议、Base URL、模型 ID 和 API Key。
 3. 点击“测试连接”，选择“本机桌面”或“独立浏览器”，保存后输入任务并按 Enter。连接测试会向所填模型服务发送一张生成的测试图片，按服务商规则计费。
 4. 在界面处理确认请求；可以暂停接管、继续或停止。Windows 紧急停止快捷键为 **Ctrl + Alt + Shift + Esc**；界面显示该快捷键是否注册成功。
 
 不使用 API Key 的“试运行本地表单”会实际操作系统 Edge，但动作来自脚本，不能作为真实模型自主成功率的证据。
-安装包尚未配置代码签名。v0.7 及更早的 Electron 安装包请先卸载再安装 v0.8，以免同时保留两套程序；旧 Key 需重新填写。v0.8 安装器支持覆盖升级，升级保留配置和历史。
+安装包尚未配置代码签名。v0.7 及更早的 Electron 安装包请先卸载再安装，以免同时保留两套程序；旧 Key 需重新填写。v0.8 及更新的安装器支持覆盖升级，升级保留配置和历史。
 
 ### 模型配置
 
@@ -61,7 +61,11 @@ npm test
 npm run dist:win
 ```
 
-生成 `desktop/release/GUI-Agent-0.8.0-x64-Setup.exe` 和 `build-manifest.json`。构建下载官方 Python 3.13.9 embedded ZIP 并校验固定 SHA-256，依赖安装到内置 runtime。不执行 `playwright install chromium`。Playwright 自己的私有 Node 驱动随依赖保留，体积计入清单；它不提供 Electron 桌面壳。
+生成 `desktop/release/GUI-Agent-0.9.0-x64-Setup.exe`、`GUI-Agent-0.9.0-x64-Portable.zip` 和 `build-manifest.json`。构建下载官方 Python 3.13.9 embedded ZIP 并校验固定 SHA-256，依赖按 `installer/requirements-windows.lock` 安装到内置 runtime。不执行 `playwright install chromium`。Playwright 自己的私有 Node 驱动随依赖保留，体积计入清单；它不提供 Electron 桌面壳。
+
+v0.9 默认只创建开始菜单快捷方式，桌面快捷方式需要勾选，只有一个 HKCU 卸载键。卸载先运行归属和链接防护，再按清单删除程序文件；用户自己放进去的文件会保留，因此可能保留非空程序目录。安装版所有软件用户数据随卸载删除。便携版解压后运行 `GUIAgent.exe`，数据在旁边的 `data` 目录，无安装注册表项；关闭后可以整体删除解压目录。
+
+桌面载荷省去 NumPy、非 Windows 后端、MCP、评测和沙盒服务，但保留共享进程工具和本地演示；完整源码功能仍在仓库中。运行时禁止写 pyc，不额外携带源码和字节码两份副本。构建要求安装包小于 50 MiB、程序文件总量小于 180 MiB，真实数值以构建清单为准。
 
 体积闸门为安装包小于 150 MiB，且负载内禁止浏览器/Electron 可执行文件。最终体积以成功 Windows 构建的清单为准。
 

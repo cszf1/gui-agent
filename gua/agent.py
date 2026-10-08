@@ -261,7 +261,7 @@ class GUIAgent:
                 a.element_id = g.element.id
             if a.type == "drag" and a.x2 is None:
                 g2 = self.grounder.ground(obs, a.target2 or a.text or "")
-                if g2 is None:
+                if g2 is None or getattr(g2, "confidence", 1.0) < getattr(self.grounder, "min_confidence", 0.0):
                     return a, "grounding_failed"
                 a.x2, a.y2 = g2.x, g2.y
             return a, g.source
@@ -269,6 +269,14 @@ class GUIAgent:
             g = self.grounder.ground(obs, a.target or "", a.element_id)
             if g:
                 a.x, a.y = g.x, g.y
+        if a.type == "click" and self.grounder.use_a11y and a.x is not None and a.y is not None:
+            el = obs.element_at(a.x, a.y)
+            if el is not None and el.enabled and el.role in {
+                    "button", "link", "checkbox", "radio", "switch", "menuitem", "tab", "listitem"}:
+                # A visual actor can still benefit from the stable node binding
+                # and native pattern path. Recheck that node before dispatch.
+                a.element_id = el.id
+                return a, "a11y_at_point"
         return a, "direct" if a.is_pointer else "-"
 
     def _scrub(self, text):

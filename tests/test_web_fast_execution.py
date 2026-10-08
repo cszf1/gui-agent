@@ -93,6 +93,31 @@ def agent_for(env, **overrides):
     return build_agent(cfg, env, llms=ScriptedPolicy({"subgoals": [{"goal": "fill"}]}).llms())
 
 
+def test_visual_click_binds_original_control_before_it_moves(env):
+    env.page.set_content(HTML)
+    agent = agent_for(env)
+    obs = agent._observe()
+    element = next(e for e in obs.elements if e.name == "Continue")
+    action, source = agent._resolve(Action("click", x=element.center[0], y=element.center[1]), obs)
+    action = env.bind_action(action, obs)
+    assert source == "a11y_at_point" and action.element_id == element.id
+    env.page.evaluate("target.style.marginLeft='400px'")
+    env.page.evaluate("document.body.insertAdjacentHTML('beforeend','<button style=\"position:absolute;left:8px;top:8px\" onclick=\"window.wrong=true\">Other</button>')")
+    assert agent._execute_gated(action, obs).ok
+    assert env.page.evaluate("window.correct === 1 && !window.wrong")
+
+
+def test_role_qualified_button_uses_dom_identity_with_no_grounding_call(env):
+    env.page.set_content(HTML + '<input aria-label="Continue">')
+    agent = agent_for(env)
+    agent.grounder.llm = None
+    obs = agent._observe()
+    action, source = agent._resolve(Action("click", target="Continue button"), obs)
+    assert source == "a11y" and obs.element(action.element_id).role == "button"
+    assert agent._execute_gated(action, obs).ok
+    assert env.page.evaluate("window.correct === 1")
+
+
 def test_targeted_type_enters_chinese_into_the_intended_field(env):
     env.page.set_content('<label for="a">Name</label><input id="a"><label for="b">Other</label><input id="b">')
     agent = agent_for(env)

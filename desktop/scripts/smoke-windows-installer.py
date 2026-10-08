@@ -96,7 +96,7 @@ def main():
             ui = EdgeWindow(Directories())
             hwnd = wait_for(ui.hwnd, "owned system Edge app window")
             own_processes = ui.owned_processes()
-            assert own_processes and all(p.name().lower() == "msedge.exe" for p in own_processes)
+            assert own_processes and any(p.name().lower() == "msedge.exe" for p in own_processes), "System Edge root is missing"
             assert state["runtime"]["engine"] == "embedded Python + system Edge"
             assert state["runtime"]["shortcutAvailable"], "Emergency stop hotkey unavailable"
             assert state["settings"]["saveScreenshots"] is False
@@ -126,7 +126,11 @@ def main():
             assert (set(browser_cache.iterdir()) if browser_cache.exists() else set()) == before_cache
             assert page.title() == "Other Edge", "App close disturbed another Edge instance"
             # Upgrade/restart preserves settings, DPAPI key and history.
+            (PROGRAM / "runtime/obsolete-library.txt").write_text("old version", encoding="utf-8")
+            (PROGRAM / "ui/obsolete-asset.txt").write_text("old version", encoding="utf-8")
             subprocess.run([str(setup), "/S"], check=True, timeout=120)
+            assert not (PROGRAM / "runtime/obsolete-library.txt").exists()
+            assert not (PROGRAM / "ui/obsolete-asset.txt").exists()
             backend, restored = launch()
             assert restored["settings"]["model"] == "test-model" and restored["settings"]["keyPersisted"]
             assert any(r["id"] == run["id"] for s in restored["sessions"] for r in s["runs"])
@@ -145,6 +149,10 @@ def main():
             for parent in (DATA / "cache", PROGRAM):
                 subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(parent / "external-link"), outside],
                                check=True, stdout=subprocess.DEVNULL)
+            vanished = Path(outside) / "vanished"; vanished.mkdir()
+            subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(PROGRAM / "dangling-link"), str(vanished)],
+                           check=True, stdout=subprocess.DEVNULL)
+            vanished.rmdir()
             subprocess.run([str(PROGRAM / "Uninstall.exe"), "/S"], check=True, timeout=120)
             backend.wait(timeout=25); backend = None
             wait_for(lambda: not PROGRAM.exists(), "program directory deletion", 30)

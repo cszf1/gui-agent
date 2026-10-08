@@ -117,7 +117,8 @@ class EdgeWindow:
         self.profile.mkdir(exist_ok=True)
         self.temp.mkdir(exist_ok=True)
         process = subprocess.Popen([str(self.edge), "--user-data-dir=" + str(self.profile), "--app=" + url,
-             "--no-first-run", "--no-default-browser-check", "--disable-background-mode", "--window-size=1380,900"],
+             "--no-first-run", "--no-default-browser-check", "--disable-background-mode", "--disable-background-networking",
+             "--disable-breakpad", "--disable-crash-reporter", "--disable-sync", "--window-size=1380,900"],
              env={**os.environ, "TMP": str(self.temp), "TEMP": str(self.temp)},
              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if self.job: self.job.attach(process)

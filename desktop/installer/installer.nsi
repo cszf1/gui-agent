@@ -33,6 +33,12 @@ Function .onInit
       SetErrorLevel 2
       Abort
     ${EndIf}
+    ; Replace runtime/UI directories as a unit so removed dependencies and old
+    ; hashed assets do not accumulate across successful upgrades. User data is
+    ; outside these directories.
+    SetOutPath "$TEMP"
+    RMDir /r "$INSTDIR\runtime"
+    RMDir /r "$INSTDIR\ui"
   fresh:
 FunctionEnd
 
@@ -47,8 +53,8 @@ Section "GUI Agent"
   WriteRegStr HKCU "Software\cszf1\GUI Agent" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "DisplayName" "GUI Agent"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "UninstallString" '$"$INSTDIR\Uninstall.exe$"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "QuietUninstallString" '$"$INSTDIR\Uninstall.exe$" /S'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GUIAgent" "NoRepair" 1
 SectionEnd

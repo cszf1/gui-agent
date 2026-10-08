@@ -33,7 +33,7 @@ def is_link(path: Path) -> bool:
 def remove_owned(path: Path) -> None:
     if is_link(path):
         if path.is_symlink(): path.unlink(missing_ok=True)
-        elif path.is_dir(): path.rmdir()  # Windows junction: delete only the link.
+        elif stat.S_ISDIR(path.lstat().st_mode): path.rmdir()  # Also handles a dangling Windows junction.
         else: path.unlink(missing_ok=True)
     elif path.is_dir():
         for child in path.iterdir(): remove_owned(child)

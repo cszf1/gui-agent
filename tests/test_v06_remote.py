@@ -224,3 +224,27 @@ def test_cli_sandbox_status_and_config_builds_remote_env(box, monkeypatch):
     cfg = load_config("configs/default.yaml", {"env": {"platform": "remote", "remote": {"url": box.url}}})
     env = build_env(cfg)
     assert env.platform == "remote" and env.health()["ok"]
+
+
+def test_mcp_session_over_remote_sandbox_with_takeover(box, env, tmp_path):
+    import io
+    from gua.config import load_config
+    from gua.mcp_server import Server, Session
+    cfg = load_config("configs/default.yaml", {"env": {"platform": "remote"}, "agent": {"settle_timeout": 2.0}})
+    cfg["runs_dir"] = str(tmp_path)
+    srv = Server(Session(cfg, env=env), out=io.StringIO())
+
+    def call(name, **args):
+        return srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": name, "arguments": args}})["result"]
+    assert "checkbox 'Subscribe'" in call("observe", include_image=False)["content"][0]["text"]
+    r = call("act", action={"type": "invoke", "method": "toggle", "target": "Subscribe"})["structuredContent"]
+    assert r["verdict"] == "success" and r["route"] == "atspi:toggle" and r["pointer_moved"] is False
+    lv = call("takeover")["structuredContent"]
+    assert lv["ok"]
+    r = call("act", action={"type": "invoke", "method": "invoke", "target": "Save"})
+    assert r["isError"] and "paused_for_human" in r["structuredContent"]["error"]
+    call("handback")
+    call("observe", include_image=False)
+    v = call("verify", postconditions=[{"kind": "element_state", "name": "Subscribe", "checked": True}])
+    assert v["structuredContent"]["verdict"] == "verified_done"

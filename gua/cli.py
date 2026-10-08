@@ -9,6 +9,7 @@
   gua sandbox up [--shell] [--apps gedit ...]           # v0.6：本机启动一台沙箱电脑（Xvfb + AT-SPI + noVNC）
   gua sandbox takeover|handback|status|snapshot|reset --remote-url URL   # 人工接管 / 交还 / 快照
   gua run --platform remote --remote-url URL --app gua-form --task "..."   # 在沙箱电脑里执行任务
+  gua mcp --platform web --url page.html            # v0.6：MCP stdio 服务器（Claude Code / Codex / Cursor 可直接接入）
 """
 from __future__ import annotations
 
@@ -60,7 +61,7 @@ def main(argv=None) -> None:
     def common(p):
         p.add_argument("-c", "--config", default="configs/default.yaml")
         p.add_argument("-m", "--model", action="append", help="叠加的模型配置 YAML，可多次")
-        p.add_argument("--platform", choices=["auto", "windows", "macos", "linux", "android", "web", "mock"])
+        p.add_argument("--platform", choices=["auto", "windows", "macos", "linux", "android", "web", "mock", "remote"])
         p.add_argument("--runs", default="runs")
         p.add_argument("--headed", action="store_true", help="web：显示浏览器窗口")
         p.add_argument("--yes", action="store_true", help="危险动作自动放行（仅在沙箱/虚拟机里用）")
@@ -93,6 +94,9 @@ def main(argv=None) -> None:
     rp.add_argument("--open", action="store_true")
 
     sub.add_parser("doctor", help="检查各平台后端依赖")
+    mc = sub.add_parser("mcp", help="v0.6：以 MCP stdio 服务器暴露 observe / act / verify / run_task")
+    common(mc)
+    mc.add_argument("--url", help="web：起始页面")
     sb = sub.add_parser("sandbox", help="v0.6：沙箱电脑（启动 / 接管 / 交还 / 快照 / 重置）")
     sb.add_argument("op", choices=["up", "status", "takeover", "handback", "snapshot", "reset", "liveview"])
     sb.add_argument("--remote-url", default="http://127.0.0.1:8765")
@@ -114,6 +118,13 @@ def main(argv=None) -> None:
         return
     if a.cmd == "sandbox":
         return _sandbox(a)
+    if a.cmd == "mcp":
+        from .mcp_server import main as mcp_main
+        cfg = _load(a)
+        if a.url:
+            from .env.web import to_url
+            cfg.setdefault("env", {}).setdefault("web", {})["start_url"] = to_url(a.url, Path.cwd())
+        return mcp_main(cfg, allow_risky=bool(getattr(a, "yes", False)))
     if a.cmd == "replay":
         from .report import build_report
         out = build_report(a.run_dir)

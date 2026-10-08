@@ -5,7 +5,8 @@ Cua Driver 以 `cua-driver mcp` 暴露 “截图 + 无障碍树 + 动作”，�
 后置条件失败……）、证据、实际执行模态与是否后台；`verify` 产出带新鲜度检查的完成凭据。
 
 传输：MCP stdio（每行一个 JSON-RPC 2.0 消息，stdout 只写协议消息，日志写 stderr）。不依赖 mcp SDK。
-工具：observe / act / verify / run_task / takeover / handback / snapshot / reset / live_view。
+工具：observe / act / verify / run_task / takeover / snapshot / reset / live_view。
+v0.7：不再向模型暴露 handback——交还控制权需要人工操作端的独立令牌（gua sandbox handback）。
 
 安全：所有动作经过同一个 SafetyGuard + 混合执行器（与 `gua run` 完全相同的闸门与验证）；MCP 调用方无法在
 终端里回答确认问题，所以需要确认的动作默认**拒绝**（--yes 才放行，仅用于一次性沙箱）；ask_user 不会读 stdin。
@@ -28,6 +29,7 @@ from .env.base import ExecResult
 from .verify import Verdict
 
 PROTOCOL = "2025-06-18"
+SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 TOOLS = [
     {"name": "observe", "description": "Capture the current screen: foreground window, URL, interactive elements "
@@ -57,8 +59,6 @@ TOOLS = [
          "task": {"type": "string"}, "demo": {"type": "object"}, "max_steps": {"type": "integer", "minimum": 1}}}},
     {"name": "takeover", "description": "Remote sandbox only: hand control to a human (agent actions and screenshots "
                                         "pause). Returns the interactive live-view URL.",
-     "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "handback", "description": "Remote sandbox only: return control to the agent; observe again afterwards.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "snapshot", "description": "Remote sandbox only: save the task state.",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
@@ -227,15 +227,17 @@ class Session:
             if not spec or not key_ok:
                 return _err("no models configured (planner model or its API key missing); pass -c/-m with models "
                             "or give a scripted 'demo'")
+        cfg = self.cfg
         if max_steps:
-            self.cfg.setdefault("agent", {})["max_steps"] = int(max_steps)
-        log = TrajectoryLogger(self.cfg.get("runs_dir", "runs"), save_images=False)
+            # Per-call override: copy, never mutate the session config for later calls.
+            cfg = dict(self.cfg, agent=dict(self.cfg.get("agent") or {}, max_steps=int(max_steps)))
+        log = TrajectoryLogger(cfg.get("runs_dir", "runs"), save_images=False)
         # Privacy, rejected intents and held keys belong to the connection,
         # including across run_task / act calls on the same computer.
         log.scrubber = self.agent.scrubber
         if notify:
             log.subscribe(notify)
-        agent = build_agent(self.cfg, self.env, log, llms=llms, ask_fn=lambda q: None)
+        agent = build_agent(cfg, self.env, log, llms=llms, ask_fn=lambda q: None)
         agent.guard.denied = self.agent.guard.denied
         agent.guard.uncertain = self.agent.guard.uncertain
         agent.guard.held = self.agent.guard.held
@@ -258,12 +260,18 @@ class Session:
     def remote(self, op: str, name: str = "default") -> dict:
         if getattr(self.env, "platform", "") != "remote":
             return _err(f"{op} needs the remote sandbox platform")
-        fn = {"takeover": self.env.takeover, "handback": self.env.handback, "live_view": self.env.live_view,
+        if op == "handback":
+            return _err("handback is a human decision: the operator runs `gua sandbox handback` with "
+                        "GUA_SANDBOX_CONTROL_TOKEN; observe again afterwards")
+        fn = {"takeover": self.env.takeover, "live_view": self.env.live_view,
               "snapshot": lambda: self.env.snapshot(name), "reset": lambda: self.env.reset(name) or {"ok": True}}[op]
         r = fn()
         if op in {"handback", "reset"}:
             self.last = None
         return {"content": [{"type": "text", "text": json.dumps(r, ensure_ascii=False)}], "structuredContent": r}
+
+
+TOOL_NAMES = {t["name"] for t in TOOLS}
 
 
 def _err(msg: str) -> dict:
@@ -286,13 +294,15 @@ class Server:
 
     def handle(self, msg: dict) -> Optional[dict]:
         mid, method, params = msg.get("id"), msg.get("method"), msg.get("params") or {}
-        if method is None:
+        if "id" not in msg:                               # notification (incl. notifications/cancelled)
             return None
-        if mid is None:                                   # notification
-            return None
+        if not isinstance(method, str) or not isinstance(params, dict):
+            # A request with an id always gets an answer; otherwise the client waits forever.
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32600, "message": "invalid request"}}
         try:
             if method == "initialize":
-                result = {"protocolVersion": params.get("protocolVersion") or PROTOCOL,
+                asked = params.get("protocolVersion")
+                result = {"protocolVersion": asked if asked in SUPPORTED_PROTOCOLS else PROTOCOL,
                           "capabilities": {"tools": {"listChanged": False}, "logging": {}},
                           "serverInfo": {"name": "gua", "version": __version__},
                           "instructions": "Call observe first. act executes and VERIFIES one action; use verify "
@@ -302,6 +312,12 @@ class Server:
             elif method == "tools/list":
                 result = {"tools": TOOLS}
             elif method == "tools/call":
+                if params.get("name") not in TOOL_NAMES:
+                    return {"jsonrpc": "2.0", "id": mid,
+                            "error": {"code": -32602, "message": f"unknown tool: {params.get('name')!r}"}}
+                if not isinstance(params.get("arguments") or {}, dict):
+                    return {"jsonrpc": "2.0", "id": mid,
+                            "error": {"code": -32602, "message": "arguments must be an object"}}
                 result = self.call(params.get("name"), params.get("arguments") or {})
             else:
                 return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method}"}}
@@ -315,7 +331,7 @@ class Server:
             return self._call(name, args)
         except Exception as e:  # noqa: BLE001
             if "paused_for_human" in str(e):
-                return _err("paused_for_human: a human has control of the sandbox; call handback first")
+                return _err("paused_for_human: a human has control of the sandbox; wait for the human hand-back")
             raise
 
     def _call(self, name: str, args: dict) -> dict:

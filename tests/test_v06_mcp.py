@@ -52,7 +52,8 @@ def test_initialize_and_tools_list():
     assert init["result"]["serverInfo"]["name"] == "gua" and "tools" in init["result"]["capabilities"]
     assert srv.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     names = {t["name"] for t in rpc(srv, "tools/list")["result"]["tools"]}
-    assert {"observe", "act", "verify", "run_task", "takeover", "handback"} <= names
+    assert {"observe", "act", "verify", "run_task", "takeover"} <= names
+    assert "handback" not in names          # v0.7：交还只属于人工操作端
     assert rpc(srv, "nope")["error"]["code"] == -32601
 
 

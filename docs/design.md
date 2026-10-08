@@ -114,7 +114,7 @@ Verifier 与 Scrubber；对标资料与差异点见 [research.md §5](research.m
 | 模块 | 作用 | 验证情况 |
 |---|---|---|
 | `gua/hybrid.py` | 混合执行器：语义 / 工具动作与像素 GUI。后台尝试前检查模态遮挡；之后做侵入检测（指针 / 前台）与生效检测。缺少 pattern 可走前台；已投递但无证据时，仅 `set_value` / `select` / `focus` 等存在等价路径的幂等动作允许恢复。点击、`toggle`、`invoke`、提交结果不明时不重放；侵入也不触发重放 | mock + 真实 Chromium + 本机 Xvfb + Docker/GTK |
-| `gua/tools/registry.py` + `gua/sandbox/process.py` | shell / 文件 / 注册 API 通道。默认全部关闭；shell 限定可执行文件、argv 直接 exec、最小环境、超时及有界输出。POSIX 子进程组清理与 Python 子进程 rlimit；Windows 普通完成后的脱离进程清理尚无 Job Object 保证。文件限定根目录、读入有上限 | 单元测试，含大输出内存与超时子进程检查 |
+| `gua/tools/registry.py` + `gua/sandbox/process.py` | shell / 文件 / 注册 API 通道。默认全部关闭；shell 限定可执行文件、argv 直接 exec、最小环境、超时及有界输出。POSIX 子进程组清理、CPU/文件大小上限；地址空间上限仅 Linux 支持，尊重更严格的继承上限。Windows 普通完成后的脱离进程清理尚无 Job Object 保证。文件限定根目录、读入有上限 | 单元测试，含大输出内存、继承资源上限与超时子进程检查 |
 | `gua/verify/postconditions.py` | 规则后置条件（`text_appears` / `text_disappears` / `element_state` / `window_title` / `url` / `pixel_change` / `output_contains`），结论只有 pass / fail / unknown；控件匹配歧义为 unknown，隐含条件绑定控件身份；密码元素的值不读取。特定状态核验失败不能用无关像素变化覆盖 | 单元测试 + 端到端 |
 | 子目标级后置条件（`planner.py` / `verifier.py`） | 规划器可为子目标给出后置条件（校验后最多 8 条）。`check_goal`：任一明确不成立 → 失败；全部成立且无 `expect_text` → 成功；有 `expect_text` 时仍需文本证据。`check_final` 对没有 `expect_text` 的子目标重新核验其后置条件 | `tests/test_v06_subgoal_postconditions.py` + 沙箱任务 |
 | `gua/env/web.py` / `gua/env/windows.py` + `uia_execution.py` | 后台语义执行：Web 绑定观察到的 DOM 节点；Windows 用 UIA Invoke/Toggle/SelectionItem/Value/ExpandCollapse/ScrollItem 模式，缺模式返回 `background_unavailable`，`SetFocus` 需要前台。原生读写前后复核身份与密码属性 | Web：真实 Chromium；Windows 新增真实 WinForms 后台路径 CI，运行状态见审查记录 |

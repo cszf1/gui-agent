@@ -34,6 +34,9 @@ $check.Width = 200
 $radio = New-Object System.Windows.Forms.RadioButton
 $radio.Text = 'Pro'
 $radio.Location = New-Object System.Drawing.Point(30, 130)
+$free = New-Object System.Windows.Forms.RadioButton
+$free.Text = 'Free'
+$free.Location = New-Object System.Drawing.Point(180, 130)
 $button = New-Object System.Windows.Forms.Button
 $button.Text = 'Continue'
 $button.Location = New-Object System.Drawing.Point(30, 180)
@@ -50,7 +53,8 @@ $button.Add_Click({ $script:clicks++; $status.Text = 'Clicks:' + $script:clicks;
 $name.Add_TextChanged({ Record-State })
 $check.Add_CheckedChanged({ Record-State })
 $radio.Add_CheckedChanged({ Record-State })
-$form.Controls.AddRange(@($name, $check, $radio, $button, $status))
+$free.Add_CheckedChanged({ Record-State })
+$form.Controls.AddRange(@($name, $check, $radio, $free, $button, $status))
 $form.Add_Shown({
   $form.Activate(); $name.Focus()
   [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(($form.Left + 250), ($form.Top + 250))
@@ -143,6 +147,7 @@ def main():
             for name, method, payload, predicate in [
                 ("Name", "set_value", "Background 测试用户", lambda row: row.get("name") == "Background 测试用户"),
                 ("Subscribe", "toggle", None, lambda row: row.get("checked") is False),
+                ("Free", "select", None, lambda row: row.get("selected") is False),
                 ("Pro", "select", None, lambda row: row.get("selected") is True),
                 ("Continue", "invoke", None, lambda row: row.get("clicks") == 2),
             ]:

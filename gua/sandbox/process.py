@@ -67,8 +67,14 @@ if __name__ == "__main__":
     if len(sys.argv) < 4 or sys.argv[1] != "--limited-exec":
         raise SystemExit("internal argv executor")
     import resource
-    for key, value in ((resource.RLIMIT_CPU, int(float(sys.argv[2])) + 1),
-                       (resource.RLIMIT_FSIZE, 50 * 1024 * 1024),
-                       (resource.RLIMIT_AS, 2 * 1024 * 1024 * 1024)):
-        resource.setrlimit(key, (value, value))
+    bounds = [(resource.RLIMIT_CPU, int(float(sys.argv[2])) + 1),
+              (resource.RLIMIT_FSIZE, 50 * 1024 * 1024)]
+    # Darwin exposes RLIMIT_AS but rejects this Linux address-space limit.
+    # Keep portable CPU/file bounds and process-group timeout cleanup there.
+    if sys.platform.startswith("linux"):
+        bounds.append((resource.RLIMIT_AS, 2 * 1024 * 1024 * 1024))
+    for key, value in bounds:
+        inherited = resource.getrlimit(key)
+        effective = min([value] + [limit for limit in inherited if limit != resource.RLIM_INFINITY])
+        resource.setrlimit(key, (effective, effective))
     os.execvpe(sys.argv[3], sys.argv[3:], os.environ)

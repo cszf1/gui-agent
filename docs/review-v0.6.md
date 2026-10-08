@@ -27,7 +27,7 @@ Linux RemoteEnv、Docker 沙盒和 MCP 是可选的开发与评测能力，不�
 ## 实际运行范围
 
 - Linux x86_64 / Python 3.12，真实 Chromium；Xvfb、openbox、GTK、AT-SPI。运行时 `NO_PROXY=127.0.0.1,localhost`。
-- 完整 Python 回归：**562 passed**（391.04 s）。其中本轮新增 30 个边界用例和 2 个真实 Web 兜底用例。
+- 首轮完整 Python 回归：**562 passed**（391.04 s）。其中新增 30 个边界用例和 2 个真实 Web 兜底用例。
 - `GUA_TEST_NO_PLAYWRIGHT=1`：**485 passed, 8 skipped**（191.72 s），包含真实本机沙盒用例。
 - 六个真实浏览器任务、双沙盒并行评测通过；目标判分来自页面或应用实际结果。
 - 桌面 TypeScript / Electron 构建、12 项单元测试与 1 项真实 Electron → Python → Chromium E2E 通过。
@@ -39,6 +39,12 @@ Linux RemoteEnv、Docker 沙盒和 MCP 是可选的开发与评测能力，不�
   CI 检查 SetValue 中文、Toggle、Select、Invoke 的应用结果与鼠标/前台不变，随后构建冻结引擎与 NSIS 安装包。
   运行结论以 [GitHub Actions](https://github.com/cszf1/gui-agent/actions) 对应提交日志为准。v0.5 的真实 Windows 原生与冻结引擎检查已通过。
 - wheel 与 sdist 构建通过；已核对 wheel 包含独立 daemon、受限进程执行器、GTK 应用与 MCP 模块，sdist 包含 Docker 上下文和配置。
+
+首轮 GitHub CI 的 macOS 3.10/3.12 暴露了 `RLIMIT_AS` 兼容问题：Darwin 拒绝 Linux 式地址空间上限，受限命令在启动前退出。
+后续修订仅在 Linux 设置该内存上限，macOS 保留 CPU、文件大小上限与超时进程组清理；各平台都尊重已继承的更严格资源上限。
+新增实际子进程继承更严格文件上限的回归；不跳过原有的 macOS shell 成功、环境清洗、超时与文件结果测试。
+资源限制修订后的相关回归为 **65 passed**，包含新增继承上限用例；该用例先在旧实现上复现启动失败，再验证修订通过。
+Windows 后台 SelectionItem 检查增加 Free → Pro 的真实状态切换，避免仅验证已经选中的控件。
 
 ## 修订后基准
 
@@ -80,7 +86,7 @@ python scripts/smoke-sandbox.py --image gua-sandbox
 - Windows CI 只覆盖受控 WinForms 窗口，不证明所有后台/最小化应用都支持 UIA pattern；复杂本机应用、macOS 与 Android 仍需实际设备验证。
 - 本机 Xvfb 与当前用户同权限。Docker 功能测试不等于隔离安全审计。noVNC 无独立认证，仅供可信回环访问。
   快照只保存工作目录与应用启动列表，不保存内存或系统状态。
-- shell 默认关闭；可执行文件白名单不是参数语义沙箱。POSIX 有进程组清理，Windows 尚无完整 Job Object 生命周期保证。
+- shell 默认关闭；可执行文件白名单不是参数语义沙箱。POSIX 有进程组清理，地址空间上限仅在 Linux 设置；Windows 尚无完整 Job Object 生命周期保证。
 - Cua-Bench 是部分兼容层；OSWorld 示例为手写的同格式合成任务，不是官方任务集成绩。
 - [Meta Muse 官方安全设计](https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse) 原链接有效（2026-09-08 发布，2026-10-08 核对）。
   README 已明确为 Meta Muse 设计参考，没有接入其代码，也不宣称同等隔离能力。

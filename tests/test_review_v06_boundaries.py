@@ -279,6 +279,25 @@ def test_process_output_is_bounded_while_reading_not_after_capture(tmp_path):
     assert peak < 2_000_000, "64 MB of subprocess output was accumulated in parent memory"
 
 
+@pytest.mark.skipif(__import__("os").name != "posix", reason="POSIX inherited resource limits")
+def test_shell_preserves_a_stricter_inherited_resource_limit(tmp_path):
+    import os
+    import subprocess
+    import sys
+    code = """import resource, sys
+from gua.sandbox.process import run_bounded
+resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 2048))
+result = run_bounded([sys.executable, '-c',
+                     "import resource; print(resource.getrlimit(resource.RLIMIT_FSIZE))"],
+                     cwd='.', env=dict(__import__('os').environ), limits=True)
+assert result.returncode == 0, result.stderr
+assert result.stdout.strip() == '(1024, 1024)', result.stdout
+"""
+    result = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=dict(os.environ),
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.skipif(__import__("os").name != "posix", reason="POSIX process-group cleanup")
 def test_shell_timeout_kills_child_before_it_can_write_later(tmp_path):
     import os

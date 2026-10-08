@@ -1,0 +1,1444 @@
+{
+  "label": "scripted policy (fixed demo steps), NOT model evidence",
+  "date": "2026-10-08",
+  "host": {
+    "python": "3.12.15",
+    "machine": "aarch64",
+    "system": "Linux"
+  },
+  "repeats": 3,
+  "sandbox_summary": [
+    {
+      "config": "gui_only/foreground",
+      "task": "sandbox_form_save",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 6,
+      "median_seconds": 8.7,
+      "pointer_moves_median": 4,
+      "fallbacks": 12
+    },
+    {
+      "config": "gui_only/foreground",
+      "task": "sandbox_slow_save",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 3,
+      "median_seconds": 7.62,
+      "pointer_moves_median": 2,
+      "fallbacks": 6
+    },
+    {
+      "config": "hybrid/foreground",
+      "task": "sandbox_form_save",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 6,
+      "median_seconds": 8.69,
+      "pointer_moves_median": 4,
+      "fallbacks": 12
+    },
+    {
+      "config": "hybrid/foreground",
+      "task": "sandbox_slow_save",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 3,
+      "median_seconds": 7.6,
+      "pointer_moves_median": 2,
+      "fallbacks": 6
+    },
+    {
+      "config": "hybrid/background",
+      "task": "sandbox_form_save",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 6,
+      "median_seconds": 9.47,
+      "pointer_moves_median": 0,
+      "fallbacks": 0
+    },
+    {
+      "config": "hybrid/background",
+      "task": "sandbox_slow_save",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 3,
+      "median_seconds": 7.92,
+      "pointer_moves_median": 0,
+      "fallbacks": 0
+    }
+  ],
+  "mock_fault_summary": [
+    {
+      "scenario": "toggle-intent/normal",
+      "config": "gui_only",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.157,
+      "pointer_moves_median": null,
+      "fallbacks": 3
+    },
+    {
+      "scenario": "toggle-intent/normal",
+      "config": "hybrid+modality_recovery",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.155,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "toggle-intent/normal",
+      "config": "hybrid-no_modality_recovery",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.156,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "toggle-intent/background_drop",
+      "config": "gui_only",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.153,
+      "pointer_moves_median": null,
+      "fallbacks": 3
+    },
+    {
+      "scenario": "toggle-intent/background_drop",
+      "config": "hybrid+modality_recovery",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.155,
+      "pointer_moves_median": null,
+      "fallbacks": 3
+    },
+    {
+      "scenario": "toggle-intent/background_drop",
+      "config": "hybrid-no_modality_recovery",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.156,
+      "pointer_moves_median": null,
+      "fallbacks": 3
+    },
+    {
+      "scenario": "invoke-intent/background_drop",
+      "config": "gui_only",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.152,
+      "pointer_moves_median": null,
+      "fallbacks": 3
+    },
+    {
+      "scenario": "invoke-intent/background_drop",
+      "config": "hybrid+modality_recovery",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.244,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "invoke-intent/background_drop",
+      "config": "hybrid-no_modality_recovery",
+      "runs": 3,
+      "pass": "0/3",
+      "false_done": 0,
+      "median_steps": 8,
+      "median_seconds": 0.413,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "click-intent/normal",
+      "config": "gui_only",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.153,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "click-intent/normal",
+      "config": "hybrid+modality_recovery",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.153,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "click-intent/normal",
+      "config": "hybrid-no_modality_recovery",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.155,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "click-intent/pointer_dead",
+      "config": "gui_only",
+      "runs": 3,
+      "pass": "0/3",
+      "false_done": 0,
+      "median_steps": 10,
+      "median_seconds": 0.498,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "click-intent/pointer_dead",
+      "config": "hybrid+modality_recovery",
+      "runs": 3,
+      "pass": "3/3",
+      "false_done": 0,
+      "median_steps": 2,
+      "median_seconds": 0.242,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    },
+    {
+      "scenario": "click-intent/pointer_dead",
+      "config": "hybrid-no_modality_recovery",
+      "runs": 3,
+      "pass": "0/3",
+      "false_done": 0,
+      "median_steps": 10,
+      "median_seconds": 0.5,
+      "pointer_moves_median": null,
+      "fallbacks": 0
+    }
+  ],
+  "rows": [
+    {
+      "part": "sandbox",
+      "config": "gui_only/foreground",
+      "task": "sandbox_form_save",
+      "rep": 0,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 8.72,
+      "pointer_moves": 4,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 4
+      },
+      "fallbacks": 4,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "gui_only/foreground",
+      "task": "sandbox_slow_save",
+      "rep": 0,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.62,
+      "pointer_moves": 2,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 2
+      },
+      "fallbacks": 2,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/foreground",
+      "task": "sandbox_form_save",
+      "rep": 0,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 8.78,
+      "pointer_moves": 4,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 4
+      },
+      "fallbacks": 4,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/foreground",
+      "task": "sandbox_slow_save",
+      "rep": 0,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.6,
+      "pointer_moves": 2,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 2
+      },
+      "fallbacks": 2,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/background",
+      "task": "sandbox_form_save",
+      "rep": 0,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 9.51,
+      "pointer_moves": 0,
+      "foreground_changes": 0,
+      "modality": {
+        "semantic": 4
+      },
+      "fallbacks": 0,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/background",
+      "task": "sandbox_slow_save",
+      "rep": 0,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.94,
+      "pointer_moves": 0,
+      "foreground_changes": 0,
+      "modality": {
+        "semantic": 2
+      },
+      "fallbacks": 0,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "gui_only/foreground",
+      "task": "sandbox_form_save",
+      "rep": 1,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 8.7,
+      "pointer_moves": 4,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 4
+      },
+      "fallbacks": 4,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "gui_only/foreground",
+      "task": "sandbox_slow_save",
+      "rep": 1,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.62,
+      "pointer_moves": 2,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 2
+      },
+      "fallbacks": 2,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/foreground",
+      "task": "sandbox_form_save",
+      "rep": 1,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 8.69,
+      "pointer_moves": 4,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 4
+      },
+      "fallbacks": 4,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/foreground",
+      "task": "sandbox_slow_save",
+      "rep": 1,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.6,
+      "pointer_moves": 2,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 2
+      },
+      "fallbacks": 2,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/background",
+      "task": "sandbox_form_save",
+      "rep": 1,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 9.47,
+      "pointer_moves": 0,
+      "foreground_changes": 0,
+      "modality": {
+        "semantic": 4
+      },
+      "fallbacks": 0,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/background",
+      "task": "sandbox_slow_save",
+      "rep": 1,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.89,
+      "pointer_moves": 0,
+      "foreground_changes": 0,
+      "modality": {
+        "semantic": 2
+      },
+      "fallbacks": 0,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "gui_only/foreground",
+      "task": "sandbox_form_save",
+      "rep": 2,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 8.69,
+      "pointer_moves": 4,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 4
+      },
+      "fallbacks": 4,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "gui_only/foreground",
+      "task": "sandbox_slow_save",
+      "rep": 2,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.62,
+      "pointer_moves": 2,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 2
+      },
+      "fallbacks": 2,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/foreground",
+      "task": "sandbox_form_save",
+      "rep": 2,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 8.69,
+      "pointer_moves": 4,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 4
+      },
+      "fallbacks": 4,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/foreground",
+      "task": "sandbox_slow_save",
+      "rep": 2,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.63,
+      "pointer_moves": 2,
+      "foreground_changes": 0,
+      "modality": {
+        "gui": 2
+      },
+      "fallbacks": 2,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/background",
+      "task": "sandbox_form_save",
+      "rep": 2,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 6,
+      "seconds": 9.45,
+      "pointer_moves": 0,
+      "foreground_changes": 0,
+      "modality": {
+        "semantic": 4
+      },
+      "fallbacks": 0,
+      "status": "done"
+    },
+    {
+      "part": "sandbox",
+      "config": "hybrid/background",
+      "task": "sandbox_slow_save",
+      "rep": 2,
+      "passed": true,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 3,
+      "seconds": 7.92,
+      "pointer_moves": 0,
+      "foreground_changes": 0,
+      "modality": {
+        "semantic": 2
+      },
+      "fallbacks": 0,
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "gui_only",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.157,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "hybrid+modality_recovery",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.159,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.158,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "gui_only",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.153,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "hybrid+modality_recovery",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.154,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.157,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "gui_only",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.157,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "hybrid+modality_recovery",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.248,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->switch_modality"
+      ],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 0,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 8,
+      "seconds": 0.412,
+      "modality": {
+        "semantic": 8
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan"
+      ],
+      "status": "fail"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "gui_only",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.153,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "hybrid+modality_recovery",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.153,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.155,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "gui_only",
+      "rep": 0,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 10,
+      "seconds": 0.504,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->reground_zoom",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom"
+      ],
+      "status": "step_limit"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "hybrid+modality_recovery",
+      "rep": 0,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.246,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->switch_modality"
+      ],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 0,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 10,
+      "seconds": 0.497,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->reground_zoom",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom"
+      ],
+      "status": "step_limit"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "gui_only",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.154,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "hybrid+modality_recovery",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.155,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.156,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "gui_only",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.156,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "hybrid+modality_recovery",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.155,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.154,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "gui_only",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.151,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "hybrid+modality_recovery",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.244,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->switch_modality"
+      ],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 1,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 8,
+      "seconds": 0.417,
+      "modality": {
+        "semantic": 8
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan"
+      ],
+      "status": "fail"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "gui_only",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.158,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "hybrid+modality_recovery",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.153,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.153,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "gui_only",
+      "rep": 1,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 10,
+      "seconds": 0.496,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->reground_zoom",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom"
+      ],
+      "status": "step_limit"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "hybrid+modality_recovery",
+      "rep": 1,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.242,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->switch_modality"
+      ],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 1,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 10,
+      "seconds": 0.502,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->reground_zoom",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom"
+      ],
+      "status": "step_limit"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "gui_only",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.158,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "hybrid+modality_recovery",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.155,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/normal",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.156,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "gui_only",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.153,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "hybrid+modality_recovery",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.155,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "toggle-intent/background_drop",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.156,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "gui_only",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.152,
+      "modality": {
+        "gui": 1
+      },
+      "fallbacks": 1,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "hybrid+modality_recovery",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.244,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->switch_modality"
+      ],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "invoke-intent/background_drop",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 2,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 8,
+      "seconds": 0.413,
+      "modality": {
+        "semantic": 8
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->replan"
+      ],
+      "status": "fail"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "gui_only",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.152,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "hybrid+modality_recovery",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.155,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/normal",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.156,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "gui_only",
+      "rep": 2,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 10,
+      "seconds": 0.498,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->reground_zoom",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom"
+      ],
+      "status": "step_limit"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "hybrid+modality_recovery",
+      "rep": 2,
+      "passed": true,
+      "activations": 1,
+      "claimed_done": true,
+      "false_done": false,
+      "steps": 2,
+      "seconds": 0.24,
+      "modality": {
+        "semantic": 1
+      },
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->switch_modality"
+      ],
+      "status": "done"
+    },
+    {
+      "part": "mock_fault",
+      "scenario": "click-intent/pointer_dead",
+      "config": "hybrid-no_modality_recovery",
+      "rep": 2,
+      "passed": false,
+      "activations": 0,
+      "claimed_done": false,
+      "false_done": false,
+      "steps": 10,
+      "seconds": 0.5,
+      "modality": {},
+      "fallbacks": 0,
+      "recoveries": [
+        "no_effect->reground_zoom",
+        "no_effect->replan",
+        "no_effect->replan",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom",
+        "no_effect->reground_zoom"
+      ],
+      "status": "step_limit"
+    }
+  ]
+}

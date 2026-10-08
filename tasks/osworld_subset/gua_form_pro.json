@@ -1,0 +1,16 @@
+{
+  "id": "gua-form-pro-synthetic",
+  "_note": "合成任务：按 OSWorld 任务 JSON 的形状手写，用来测试 gua 的子集适配器；不是 OSWorld 官方任务。",
+  "snapshot": "gua-form",
+  "instruction": "In Gua Form, enter the name Kai, choose the Pro plan and save the form.",
+  "related_apps": ["gua-form"],
+  "config": [
+    {"type": "launch", "parameters": {"command": ["gua-form"], "wait_for": "Save"}},
+    {"type": "sleep", "parameters": {"seconds": 0.2}}
+  ],
+  "evaluator": {
+    "func": "check_include_exclude",
+    "result": {"type": "vm_file", "path": "result.json"},
+    "expected": {"type": "rule", "rules": {"include": ["\"name\": \"Kai\"", "\"plan\": \"Pro\""], "exclude": ["\"plan\": \"Free\""]}}
+  }
+}

@@ -157,6 +157,12 @@ def sandbox_text(env, text: str) -> tuple[bool, str]:
     return ok, f"sandbox screen contains {text!r}: {ok}"
 
 
+@checker("osworld_eval", needs_env=True)
+def osworld_eval(env, func: str, result: dict, expected: dict) -> tuple[bool, str]:
+    from .osworld import evaluate
+    return evaluate(env, func, result, expected)
+
+
 def run_checks(specs: list[dict], env=None) -> tuple[bool, list[str]]:
     notes, all_ok = [], True
     for s in specs:

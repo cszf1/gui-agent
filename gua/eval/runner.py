@@ -104,6 +104,13 @@ def load_tasks(path: str | Path, platform: Optional[str] = None) -> list[dict]:
             continue
         if not isinstance(t, dict) or "instruction" not in t:
             continue
+        if "evaluator" in t and "checks" not in t:     # v0.6：OSWorld 风格任务 → 沙箱任务（子集适配）
+            from .osworld import UnsupportedTask, convert
+            try:
+                t = convert(t)
+            except UnsupportedTask as e:
+                print(f"skip {f.name}: {e}", file=sys.stderr)
+                continue
         t.setdefault("platform", "windows")   # v0.1 任务都是 Windows
         t["_dir"] = str(f.parent.resolve())
         if platform is None or t["platform"] == platform:

@@ -13,6 +13,9 @@
 新增用例：`tests/test_review_v07.py`（25 个回归，均先在 `f195cdb` 上运行确认失败，只有 1 个正向对照用例在旧代码上也通过）、
 `tests/test_v07_cua.py`（9 个，本地 HTTP 替身上的端到端）、`tests/test_v07_grounding_som.py`（4 个）。
 
+首次 GitHub CI 的 Windows 3.10/3.12 发现凭据继承用例硬编码 `/bin/sh`，导致 `FileNotFoundError`。
+该用例改用当前 Python 启动真实应用子进程；核验普通标记变量被继承、两个凭据变量均未继承，保留跨平台的实际进程检查。
+
 ## 先看三个用户提交
 
 整体方向正确：进程组清理与有界输出、继承更严格 rlimit、Darwin 不设 `RLIMIT_AS`、观察快照绑定、同控件身份兜底、

@@ -109,9 +109,10 @@ def daemon(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     env = {k: v for k, v in os.environ.items() if not k.upper().endswith("_PROXY")}
-    env.update(GUA_SANDBOX_TOKEN="agent-token-123", GUA_SANDBOX_CONTROL_TOKEN="human-token-456")
+    env.update(GUA_SANDBOX_TOKEN="agent-token-123", GUA_SANDBOX_CONTROL_TOKEN="human-token-456",
+               GUA_V07_ENV_PROBE="inherited")
     p = subprocess.Popen([sys.executable, str(DAEMON), "--port", str(port), "--workdir", str(work),
-                          "--display", ":99", "--shell", "--apps", "gua-form", "/bin/sh"],
+                          "--display", ":99", "--shell", "--apps", "gua-form", sys.executable],
                          env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     url = f"http://127.0.0.1:{port}"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -160,14 +161,24 @@ def test_launch_allowlist_matches_exact_names_not_basenames(daemon):
 
 
 def test_launched_apps_do_not_inherit_sandbox_credentials(daemon):
-    r = daemon("POST", "/launch", {"argv": ["/bin/sh", "-c", "env > leaked.txt"]})[1]
+    script = (
+        "import json, os; from pathlib import Path; "
+        "keys = ('GUA_SANDBOX_TOKEN', 'GUA_SANDBOX_CONTROL_TOKEN', 'GUA_V07_ENV_PROBE'); "
+        "p = Path('child-env.tmp'); "
+        "p.write_text(json.dumps({k: os.environ.get(k) for k in keys}), encoding='utf-8'); "
+        "p.replace('child-env.json')"
+    )
+    r = daemon("POST", "/launch", {"argv": [sys.executable, "-I", "-c", script]})[1]
     assert r["ok"], r
+    result = daemon.work / "child-env.json"
     for _ in range(50):
-        if (daemon.work / "leaked.txt").exists() and (daemon.work / "leaked.txt").stat().st_size:
+        if result.exists():
             break
         time.sleep(0.05)
-    leaked = (daemon.work / "leaked.txt").read_text()
-    assert "agent-token-123" not in leaked and "human-token-456" not in leaked
+    inherited = json.loads(result.read_text(encoding="utf-8"))
+    assert inherited["GUA_V07_ENV_PROBE"] == "inherited"
+    assert inherited["GUA_SANDBOX_TOKEN"] is None
+    assert inherited["GUA_SANDBOX_CONTROL_TOKEN"] is None
 
 
 def test_malformed_requests_get_a_json_error_instead_of_a_dropped_connection(daemon):

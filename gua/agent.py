@@ -28,11 +28,12 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
-from .actions import Action, ActionParseError
+from .actions import TOOL_ACTIONS, Action, ActionParseError, modality_of
 from .coords import to_pixel_action
 from .env.base import Env, ExecResult, Observation
 from .errors import PrivacyBlocked, UserAbort
 from .grounding import Grounder
+from .hybrid import HybridConfig, HybridExecutor, wrap_fallback_result
 from .llm.base import Budget, BudgetExceeded, EgressGate
 from .logger import TrajectoryLogger
 from .memory import Memory, Milestone, StepRecord
@@ -84,6 +85,8 @@ class RunResult:
     safety_events: list[dict] = field(default_factory=list)
     policy: dict = field(default_factory=dict)
     performance: dict = field(default_factory=dict)
+    modality: dict = field(default_factory=dict)       # v0.6：各执行模态次数 / 回退 / 后台侵入 / 后台生效核验
+    receipts: list = field(default_factory=list)       # v0.6：每个子目标的“已验证完成”凭据（含证据）
 
 
 StepHook = Callable[[int, "GUIAgent"], None]
@@ -94,13 +97,23 @@ class GUIAgent:
                  recovery: RecoveryPolicy, cfg: AgentConfig, budget: Budget,
                  logger: Optional[TrajectoryLogger] = None, memory: Optional[Memory] = None,
                  reflector: Optional[Reflector] = None, guard: Optional[SafetyGuard] = None,
-                 policy: Optional[CapabilityPolicy] = None):
+                 policy: Optional[CapabilityPolicy] = None, hybrid: Optional[HybridExecutor] = None,
+                 tools=None):
         self.env, self.planner, self.actor, self.grounder = env, planner, actor, grounder
         self.verifier, self.recovery, self.cfg, self.budget = verifier, recovery, cfg, budget
         self.log = logger
         self.mem = memory or Memory()
         self.reflector = reflector or Reflector(None, enabled=False)
         self.guard = guard or SafetyGuard(mode="deny")
+        # v0.6 混合执行器：工具通道 + 语义（后台）动作 + 已验证的前台回退
+        # 直接构造（未传 hybrid）时保持 v0.5 的恢复行为：不自动换模态；build_agent 按配置打开
+        self.hybrid = hybrid or HybridExecutor(env, tools, HybridConfig(modality_recovery=False))
+        if self.hybrid.observe is None:
+            self.hybrid.observe = lambda: self._observe()
+        if tools is not None and self.hybrid.tools is None:
+            self.hybrid.tools = tools
+        if self.guard.tools is None:
+            self.guard.tools = self.hybrid.tools
         self.policy = policy or CapabilityPolicy(
             a11y_grounding=grounder.use_a11y, a11y_rules=verifier.use_a11y,
             a11y_in_prompts=getattr(getattr(actor, "policy", None), "a11y_in_prompts", True),
@@ -110,6 +123,7 @@ class GUIAgent:
             on_uncertain=cfg.on_uncertain,
             recovery="none" if not recovery.enabled else "fixed_retry" if recovery.fixed_retry else "classified")
         self.step_no = 0
+        self.receipts: list[dict] = []
         self.before_step: list[StepHook] = []
         self._t0 = time.monotonic()
         self._answer = ""
@@ -210,6 +224,14 @@ class GUIAgent:
     def _resolve(self, a: Action, obs: Observation, zoom_around=None) -> tuple[Action, str]:
         """坐标换算 + 把 target 描述 / element_id 变成截图像素坐标。"""
         w, h = obs.screenshot.size
+        if a.type in TOOL_ACTIONS:
+            return a, "-"
+        if a.type == "invoke":
+            match = self.grounder.match_a11y(obs, a.target or "", a.element_id)
+            if match is None:
+                return a, "grounding_failed"
+            a.element_id = match[0].id
+            return a, match[1]
         if a.type == "type" and (a.element_id is not None or a.target):
             if not self.env.targeted_input:
                 return a, "grounding_failed"
@@ -301,7 +323,7 @@ class GUIAgent:
         view, _ = self._view(a, obs)                 # 原动作的安全摘要（占位符 / 敏感文本一律脱敏）
         exec_a = a
         missing: list[str] = []
-        if a.type == "type" and a.text:
+        if (a.type == "type" or (a.type == "invoke" and a.method == "set_value")) and a.text:
             if SECRET_RE.search(a.text):
                 expanded, missing = self._expand_secrets(a.text)
                 exec_a = replace(a, text=expanded)
@@ -324,7 +346,20 @@ class GUIAgent:
             t = time.time()
             return ExecResult(False, f"blocked_by_safety: {why}", t, t)
         with self.performance.measure("execute"):
-            res = self.env.execute(exec_a)
+            if exec_a.type in TOOL_ACTIONS:
+                res = self.hybrid.run_tool(exec_a)
+            elif exec_a.type == "invoke":
+                res, fallback = self.hybrid.run_semantic(exec_a, obs)
+                if fallback is not None:
+                    self.hybrid.stats["fallbacks"] += 1
+                    if self.log:
+                        self.log.step(kind="modality_fallback", step=self.step_no, origin=origin,
+                                      reason=self._scrub(res.error), route=res.route)
+                    res = wrap_fallback_result(res, self._execute_gated(fallback, obs, origin + ":fallback"))
+                    self.hybrid._count(fallback, res)
+            else:
+                res = self.env.execute(exec_a)
+                res.signals.setdefault("modality", modality_of(exec_a, res.route))
         self.performance.execution(res.route)
         res.error, res.output = self._scrub(res.error), self._scrub(res.output)   # 执行层报错可能回显输入
         if not res.ok and "blocked_by_safety" in (res.error or ""):
@@ -347,6 +382,13 @@ class GUIAgent:
         """执行恢复动作（每个都过安全闸门）；返回被拦下的动作说明。被拦后不再继续执行后续恢复动作。"""
         blocked = []
         for ra in actions:
+            if ra.type in {"invoke", "click"} and ra.element_id is None and ra.target and ra.x is None:
+                m = self.grounder.match_a11y(obs, ra.target)        # 换模态恢复：在当前观察上重新绑定元素
+                if m is None:
+                    continue
+                ra.element_id = m[0].id
+                if ra.type == "click":
+                    ra.x, ra.y = m[0].center
             shown = self._view(ra, obs)[1]
             r = self._execute_gated(ra, obs, origin)
             if not r.ok and "blocked_by_safety" in r.error:
@@ -528,6 +570,13 @@ class GUIAgent:
                                                  task_window=self.cfg.task_window, expect_text=sg.expect_text or None,
                                                  action_desc=view_s)
             check.signals["execution_route"] = res.route
+            check.signals["modality"] = res.signals.get("modality") or modality_of(action, res.route)
+            for k in ("background", "pointer_moved", "focus_stolen", "fallback_reason", "background_effect",
+                      "fallback_from"):
+                if k in res.signals:
+                    check.signals[k] = res.signals[k]
+            if res.output and action.type in TOOL_ACTIONS:
+                check.signals["tool_output"] = self._scrub(res.output)[:400]
             check.evidence = self._scrub(check.evidence)
             rec = StepRecord(self.step_no, sg.id, view_s, check.verdict.value, check.evidence)
 
@@ -536,10 +585,33 @@ class GUIAgent:
             else:
                 if self.mem.is_looping():
                     last_failure = "repeat"
-                plan = self.recovery.decide(check, action, self.cfg.task_window, last_failure)
+                if (self.hybrid.cfg.modality_recovery and self.hybrid.cfg.mode != "gui_only"
+                        and getattr(self.env, "semantic_actions", False)):
+                    plan = self.recovery.decide(check, action, self.cfg.task_window, last_failure, obs=before,
+                                                hybrid=True)
+                else:      # 兼容自定义 RecoveryPolicy 子类的旧签名
+                    plan = self.recovery.decide(check, action, self.cfg.task_window, last_failure)
                 rec.recovery = plan.strategy.value
                 last_failure = check.verdict.value
                 blocked = self._run_recovery_actions(plan.actions, after, f"recovery:{plan.strategy.value}")
+                if plan.strategy == Strategy.SWITCH_MODALITY and plan.actions and not blocked:
+                    # 换模态恢复后立即用同一套规则重新验证“原来的意图”是否已达成；达成才算恢复成功
+                    obs2, st2 = self._settle()
+                    t_now = time.time()
+                    c2 = self.verifier.check_step(before, obs2, action, ExecResult(True, "", t_now, t_now,
+                                                                                    route="recovery:switch_modality"),
+                                                  st2, expected=sg.expected, task_window=self.cfg.task_window,
+                                                  expect_text=sg.expect_text or None, action_desc=view_s)
+                    c2.evidence = self._scrub(c2.evidence)
+                    if c2.verdict == Verdict.SUCCESS:
+                        check.signals["recovered_by"] = "switch_modality"
+                        rec.verdict, rec.evidence = "success", f"recovered via modality switch: {c2.evidence}"[:300]
+                        feedback = (f"The previous action had no visible effect; the same intent was completed via "
+                                    f"another modality and verified ({c2.evidence[:160]}). Continue with the next step.")
+                        last_failure = None
+                        self.mem.add_step(rec)
+                        self._log_step(rec, before, obs2, view_d, src, check, thought)
+                        continue
                 if plan.strategy == Strategy.REGROUND_ZOOM and action.point is not None:
                     zoom_around = action.point
                 if plan.strategy in {Strategy.REPLAN, Strategy.GIVE_UP} and self.recovery.exhausted:
@@ -611,7 +683,10 @@ class GUIAgent:
         claimed = claimed and status == "done"          # 只有 done 才算“宣称完成”
         r = RunResult(status, claimed, self.step_no, replans, list(self.recovery.history), self.budget,
                       time.monotonic() - self._t0, self._scrub(msg), self._scrub(self._answer),
-                      self.scrubber.scrub_obj(list(self.guard.log)), self.policy.to_dict(), self.performance.summary())
+                      self.scrubber.scrub_obj(list(self.guard.log)), self.policy.to_dict(), self.performance.summary(),
+                      self.scrubber.scrub_obj(dict(self.hybrid.stats, mode=self.hybrid.cfg.mode,
+                                                   dispatch=self.hybrid.cfg.dispatch)),
+                      self.scrubber.scrub_obj(list(self.receipts)))
         if self.log:
             self.log.meta(result=r)
         return r

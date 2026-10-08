@@ -13,6 +13,7 @@ from .coords import CoordMapper
 from .env import detect_platform, make_env
 from .env.base import Env
 from .grounding import Grounder
+from .hybrid import HybridConfig, HybridExecutor
 from .llm import Budget, BudgetGate, make_llm
 from .logger import TrajectoryLogger
 from .planner import PLATFORM_DESC, Actor, Planner, UITarsActor
@@ -20,6 +21,7 @@ from .policy import CapabilityPolicy
 from .recovery import RecoveryPolicy
 from .reflection import Reflector
 from .safety import SafetyGuard
+from .tools import ToolRegistry
 from .verify import Verifier
 
 
@@ -121,6 +123,10 @@ def build_agent(cfg: dict, env: Env, logger: Optional[TrajectoryLogger] = None,
                         allowed_domains=s.get("allowed_domains") or web_domains,
                         extra_risky_words=s.get("extra_risky_words") or [], confirm_fn=confirm_fn, ask_fn=ask_fn,
                         allowed_apps=s.get("allowed_apps") or [])
+    tools = ToolRegistry.from_config(cfg)
+    guard.tools = tools
+    hcfg = HybridConfig.from_config(cfg)
+    hybrid = HybridExecutor(env, tools, hcfg)
     a = cfg.get("agent") or {}
     acfg = AgentConfig(max_steps=a.get("max_steps", 50), max_steps_per_subgoal=a.get("max_steps_per_subgoal", 15),
                        max_replans=a.get("max_replans", 2), settle_timeout=a.get("settle_timeout", 5.0),
@@ -146,5 +152,8 @@ def build_agent(cfg: dict, env: Env, logger: Optional[TrajectoryLogger] = None,
     else:
         actor = Actor(actor_g, platform, act.get("max_elements_in_prompt", 80), act.get("coord_space"),
                       policy=policy, max_pixels=act_pixels)
+        if hcfg.mode != "gui_only":
+            actor.semantic_hint = env.semantic_methods if getattr(env, "semantic_actions", False) else None
+            actor.extra_docs = tools.prompt_docs()
     return GUIAgent(env, Planner(planner_g, platform, policy=policy), actor, grounder, verifier, recovery, acfg,
-                    budget, logger, reflector=reflector, guard=guard, policy=policy)
+                    budget, logger, reflector=reflector, guard=guard, policy=policy, hybrid=hybrid, tools=tools)

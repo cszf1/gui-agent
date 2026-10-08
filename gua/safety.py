@@ -122,6 +122,8 @@ class SafetyGuard:
     # GUIAgent 会把它替换成“整次运行同一个”实例，使普通 token 字段里的已配置秘密也不露出。
     scrubber: Scrubber = field(default_factory=Scrubber, repr=False)
     _stale_obs: Optional[Observation] = field(default=None, repr=False)   # 已执行过移焦动作的观察
+    # v0.6：代码 / 文件 / API 通道的能力边界（gua.tools.ToolRegistry）；None = 这些动作一律拒绝
+    tools: Optional[object] = field(default=None, repr=False)
 
     # ---------------------------------------------------------------- 焦点 / 激活目标
     def _scrub_text(self, s):
@@ -155,6 +157,9 @@ class SafetyGuard:
         """动作是否会“激活”某个目标：pointer（点到的元素）| key（焦点元素）| submit（焦点 / 其表单）。"""
         if a.type in {"click", "double_click", "long_press"}:
             return "pointer"
+        if a.type == "invoke":
+            # v0.6：语义动作激活的就是它绑定的元素，与点击同一元素共享拒绝签名（换模态绕不过拒绝）
+            return "pointer" if a.method in {"invoke", "toggle", "select", "expand", "collapse"} else None
         if a.type in {"hotkey", "key_down"}:
             ks = canonical_set(a.keys) | frozenset(self.held)
             if ks & ACTIVATION_KEYS:
@@ -221,11 +226,57 @@ class SafetyGuard:
                 return w
         return None
 
+    def _assess_tool(self, a: Action) -> Decision:
+        """shell / file / api：先看能力边界（ToolRegistry，越界直接 deny），再看内容风险（confirm）。"""
+        base = self.base_signature(a)
+        if self.tools is None:
+            return Decision("deny", f"{a.type} tools are not configured", [base])
+        why = self.tools.check(a)
+        if why:
+            return Decision("deny", why, [base])
+        payload = " ".join(a.command) if a.type == "shell" else (a.text or "") if a.type == "file" else \
+            json.dumps(a.args, ensure_ascii=False, sort_keys=True, default=str)
+        from .sensitive import SECRET_RE
+        if SECRET_RE.search(payload) or SECRET_RE.search(a.path or ""):
+            return Decision("deny", "secret placeholders are not allowed in tool calls", [base])
+        hits = []
+        if a.type == "shell":
+            if any(any(ch in c for ch in "|;&`\n") or "$(" in c for c in a.command):
+                hits.append("command arguments contain shell metacharacters (they are passed literally)")
+            for pat in DANGEROUS_TEXT:
+                if re.search(pat, payload, re.I):
+                    hits.append(f"command matches destructive pattern {pat!r}")
+                    break
+        if a.type == "api":
+            w = self._risky_word((a.tool or "").replace("_", " ").replace(".", " "))
+            if w:
+                hits.append(f"api tool name looks irreversible/externally visible ({w})")
+        r = self.tools.is_risky(a)
+        if r:
+            hits.append(r)
+        if hits:
+            return Decision("confirm", "; ".join(dict.fromkeys(hits)), [base])
+        return Decision("allow")
+
     def assess(self, a: Action, obs: Optional[Observation] = None) -> Decision:
         if not self.enabled:
             return Decision("allow")
+        if a.type in {"shell", "file", "api"}:
+            return self._assess_tool(a)
         hits: list[tuple[str, str]] = []          # (reason, signature)
         base = self.base_signature(a)
+        if a.type == "invoke" and a.method == "set_value":
+            el = obs.element(a.element_id) if obs is not None and a.element_id is not None else None
+            if el is None or is_password_el(el) or el.role not in _TEXT_ENTRY_ROLES:
+                return Decision("deny", "semantic set_value only targets an identified, non-password text field; "
+                                "use the verified type action instead", [base])
+            text = a.text or ""
+            if any(unicodedata.category(c) == "Cc" and c not in _ALLOWED_CTRL_CHARS for c in text):
+                hits.append(("value contains control characters", base))
+            for pat in DANGEROUS_TEXT:
+                if re.search(pat, text, re.I):
+                    hits.append((f"value matches destructive pattern {pat!r}", base))
+                    break
         if a.type == "navigate":
             url = a.url or a.text or ""
             if self.allowed_domains and not domain_allowed(url, self.allowed_domains):
@@ -322,6 +373,14 @@ class SafetyGuard:
             return f"open_app|{self._scrub_text((a.app or a.text or '').lower())}"
         if a.is_pointer:
             return f"{a.type}|{self._scrub_text(a.target or '')}|{a.point}"
+        if a.type == "shell":
+            return f"shell|{_h(json.dumps(a.command))}"
+        if a.type == "api":
+            return f"api|{a.tool}|{_h(json.dumps(a.args, sort_keys=True, default=str))}"
+        if a.type == "file":
+            return f"file|{a.method}|{self._scrub_text(a.path or '')}|{_h(a.text)}"
+        if a.type == "invoke":
+            return f"invoke|{a.method}|{a.element_id}|{self._scrub_text(a.target or '')}|{_h(a.text)}"
         return f"{a.type}|{_h(json.dumps(a.to_dict(), sort_keys=True))}"
 
     def signatures(self, a: Action, obs: Optional[Observation] = None) -> list[str]:
@@ -371,6 +430,10 @@ class SafetyGuard:
             return False
         if a.type == "type":
             return bool(a.clear) or self._activation(a, obs) is not None
+        if a.type == "invoke" and a.method == "scroll_into_view":
+            return False
+        if a.type in {"file", "api"}:
+            return False
         return True
 
     def gate(self, a: Action, obs: Optional[Observation] = None) -> tuple[bool, str]:

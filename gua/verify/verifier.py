@@ -101,7 +101,7 @@ BUSY_LINE_RE = re.compile(
     r"(?:[\s:,]+(?:loading|please wait|processing|saving|results|data|changes|正在加载|请稍候|处理中))?"
     r"[\s:,]*(?:\d{1,3}\s*%|\d+\s*(?:/|of)\s*\d+)?"
     r"[\s:.…]*$", re.I)
-_CHANGE_ACTIONS = {"click", "double_click", "right_click", "long_press", "type", "hotkey", "drag"}
+_CHANGE_ACTIONS = {"click", "double_click", "right_click", "long_press", "type", "hotkey", "drag", "invoke"}
 
 
 def _norm(s: str) -> str:
@@ -250,6 +250,17 @@ class Verifier:
             if busy:
                 sig["busy"] = busy
                 return Check(Verdict.IN_PROGRESS, f"busy indicator visible: {busy!r}", "L1", sig)
+        # 4.5) v0.6 动作级后置条件（actor 预测 + 语义动作自带）：全部 pass 才算成功证据；任一明确 fail 即失败
+        preds = list(getattr(action, "expect", None) or [])
+        from .postconditions import evaluate as _eval_pc, implied_postconditions
+        preds += [p for p in implied_postconditions(action, before) if p not in preds]
+        if preds:
+            rep = _eval_pc(preds, before, after, use_a11y=self.use_a11y, output=exec_res.output or None)
+            sig["postconditions"] = rep.to_list()
+            if rep.verdict == "failed":
+                return Check(Verdict.FAILED, f"postcondition failed: {rep.evidence()}", "L1", sig)
+            if rep.verdict == "success":
+                return Check(Verdict.SUCCESS, f"all postconditions verified: {rep.evidence()}", "L1", sig)
         # 5) 无障碍树正面证据
         if self.use_a11y:
             if expect_text and expect_text.lower() in after.all_text().lower():
@@ -268,6 +279,9 @@ class Verifier:
                     if ea is not None and ea.checked is not None and ea.checked != eb.checked:
                         return Check(Verdict.SUCCESS, f"{eb.role} {eb.name!r} toggled to {ea.checked}", "L1", sig)
         # 6) 动作类型相关的便宜判定
+        if action.type in {"shell", "file", "api"}:
+            # 代码 / API 通道：执行层返回码就是 L0 证据；屏幕不必变化。是否达成子目标仍由子目标 / 收尾核验决定。
+            return Check(Verdict.SUCCESS, f"{action.type} tool completed (exit ok)", "L0", sig)
         if action.type == "wait":
             return Check(Verdict.SUCCESS, "wait completed", "L1", sig)
         if action.type in {"navigate", "back", "open_app", "home", "focus_window"}:

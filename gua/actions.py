@@ -24,21 +24,49 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 POINTER_ACTIONS = {"click", "double_click", "right_click", "long_press", "move", "drag"}
+# v0.6 混合动作空间（code/API first, GUI fallback）：
+#   invoke —— 语义控件动作（UIA 模式 / AT-SPI action / DOM 方法），不移动指针、尽量不抢焦点；
+#   shell / file / api —— 代码与应用 API 通道。全部经过同一个安全闸门与同一套验证。
+SEMANTIC_METHODS = {"invoke", "toggle", "select", "set_value", "expand", "collapse", "scroll_into_view", "focus"}
+FILE_METHODS = {"read", "write", "append", "list"}
+TOOL_ACTIONS = {"shell", "file", "api"}
 ACTION_TYPES = POINTER_ACTIONS | {
     "scroll", "type", "hotkey", "key_down", "key_up", "wait",
     "open_app", "navigate", "back", "home", "focus_window",
-    "ask_user", "done", "fail",
-}
+    "ask_user", "done", "fail", "invoke",
+} | TOOL_ACTIONS
+DISPATCH_MODES = {"auto", "background", "foreground"}
+MAX_COMMAND_ARGS = 64
+MAX_POSTCONDITIONS = 8
 TERMINAL_ACTIONS = {"done", "fail"}
 # 各平台不支持的动作（执行层直接返回 unsupported，而不是静默成功）
 UNSUPPORTED = {
     "web": {"home", "open_app", "long_press"},
-    "android": {"right_click", "move", "key_down", "key_up", "navigate", "focus_window"},
+    "android": {"right_click", "move", "key_down", "key_up", "navigate", "focus_window", "invoke"},
     "windows": {"navigate", "home"},
-    "macos": {"navigate", "home"},
-    "linux": {"navigate", "home"},
+    "macos": {"navigate", "home", "invoke"},      # AX 语义动作尚未实现（诚实标注，不静默成功）
+    "linux": {"navigate", "home", "invoke"},      # 本机 Linux 后端未接 AT-SPI 动作；远程沙箱（remote）已实现
+    "remote": {"navigate", "home", "long_press"},
     "mock": set(),
 }
+
+
+def modality_of(action, route: str = "") -> str:
+    """消融用的“执行模态”标签：gui | semantic | shell | file | api | control。
+
+    route 是执行层实际走的路径（例如 Windows 普通 click 实际走了 uia_invoke），它优先于动作类型。
+    """
+    t = getattr(action, "type", "")
+    if t in TOOL_ACTIONS:
+        return t
+    r = route or ""
+    if r.startswith(("semantic", "uia_", "atspi", "dom_")) and not r.startswith("fallback:"):
+        return "semantic"
+    if t == "invoke" and not r.startswith("fallback:"):
+        return "semantic"
+    if t in {"wait", "ask_user", "done", "fail"}:
+        return "control"
+    return "gui"
 SCROLL_DIRS = {"up", "down", "left", "right"}
 COORD_SPACES = {"pixel", "norm1000", "norm1", "resized"}
 COORD_RANGE = {"norm1000": 1000.0, "norm1": 1.0}
@@ -124,6 +152,14 @@ class Action:
     clear: bool = False                 # type 前先清空
     submit: bool = False                # type 后回车
     reason: str = ""                    # 模型给出的理由（日志用）
+    # ---- v0.6 混合动作空间
+    method: Optional[str] = None        # invoke: SEMANTIC_METHODS；file: FILE_METHODS
+    command: list[str] = field(default_factory=list)   # shell：argv（从不经过 shell 解释器）
+    path: Optional[str] = None          # file：相对工作区根目录的路径
+    tool: Optional[str] = None          # api：已注册的应用 API 工具名
+    args: dict = field(default_factory=dict)            # api：参数
+    expect: list = field(default_factory=list)          # 动作级后置条件（actor 预测，执行后逐条核验）
+    dispatch: Optional[str] = None      # invoke：auto | background | foreground
     # 模型坐标 → 截图像素的变换链（来自实际发送的图像尺寸，见 coords.ImageTransform）；不序列化
     transform: Optional[Any] = field(default=None, repr=False, compare=False)
     # Executor-issued snapshot binding. Never accepted from model JSON or serialized.
@@ -210,7 +246,52 @@ class Action:
             raise ActionParseError("missing_field", "navigate needs url", "url")
         if t == "ask_user" and not (self.text or "").strip():
             raise ActionParseError("missing_field", "ask_user needs text (the question)", "text")
+        self._validate_hybrid()
         return self
+
+    def _validate_hybrid(self) -> None:
+        t = self.type
+        for name in ("method", "path", "tool", "dispatch"):
+            v = getattr(self, name)
+            if v is not None and not isinstance(v, str):
+                raise ActionParseError("bad_type", f"{name} must be a string", name)
+        if self.dispatch is not None and self.dispatch not in DISPATCH_MODES:
+            raise ActionParseError("bad_value", f"dispatch must be one of {sorted(DISPATCH_MODES)}", "dispatch")
+        if not isinstance(self.expect, list) or len(self.expect) > MAX_POSTCONDITIONS:
+            raise ActionParseError("bad_type", f"expect must be a list of at most {MAX_POSTCONDITIONS} "
+                                   "postcondition objects", "expect")
+        from .verify.postconditions import validate_postcondition
+        for i, pc in enumerate(self.expect):
+            err = validate_postcondition(pc)
+            if err:
+                raise ActionParseError("bad_value", f"expect[{i}]: {err}", "expect")
+        if t == "invoke":
+            if self.method not in SEMANTIC_METHODS:
+                raise ActionParseError("bad_value", f"invoke method must be one of {sorted(SEMANTIC_METHODS)}, "
+                                       f"got {self.method!r}", "method")
+            if self.element_id is None and not (self.target or "").strip():
+                raise ActionParseError("missing_field", "invoke needs element_id or target", "element_id")
+            if self.method == "set_value" and self.text is None:
+                raise ActionParseError("missing_field", "invoke set_value needs text", "text")
+        if t == "shell":
+            if (not isinstance(self.command, list) or not self.command or len(self.command) > MAX_COMMAND_ARGS
+                    or not all(isinstance(c, str) for c in self.command) or not self.command[0].strip()):
+                raise ActionParseError("missing_field", "shell needs command as a non-empty argv list of strings",
+                                       "command")
+            if any("\x00" in c for c in self.command):
+                raise ActionParseError("bad_value", "command contains NUL", "command")
+        if t == "file":
+            if self.method not in FILE_METHODS:
+                raise ActionParseError("bad_value", f"file method must be one of {sorted(FILE_METHODS)}", "method")
+            if not (self.path or "").strip() and self.method != "list":
+                raise ActionParseError("missing_field", "file needs path", "path")
+            if self.method in {"write", "append"} and self.text is None:
+                raise ActionParseError("missing_field", f"file {self.method} needs text", "text")
+        if t == "api":
+            if not (self.tool or "").strip():
+                raise ActionParseError("missing_field", "api needs tool", "tool")
+            if not isinstance(self.args, dict):
+                raise ActionParseError("bad_type", "api args must be an object", "args")
 
     @property
     def is_pointer(self) -> bool:
@@ -228,7 +309,8 @@ class Action:
 
     def to_dict(self) -> dict[str, Any]:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__
-             if k not in {"coord_space", "transform", "binding"} and getattr(self, k) not in (None, [], "", 0, 0.0, False)}
+             if k not in {"coord_space", "transform", "binding"} and getattr(self, k) not in (None, [], "", 0, 0.0, False)
+             and getattr(self, k) != {}}
         d = json.loads(json.dumps(d, default=str))
         if self.coord_space != "pixel":
             d["coord_space"] = self.coord_space
@@ -264,7 +346,10 @@ def parse_action(obj: dict[str, Any], default_coord_space: str = "pixel") -> Act
         raise ActionParseError("missing_type", "action has no \"type\"", "type", obj)
     if not isinstance(t, str) or not t.strip():
         raise ActionParseError("bad_type", f"action type must be a string, got {t!r}", "type", obj)
-    t = _ALIASES.get(t.strip().lower(), t.strip().lower())
+    raw_t = t.strip().lower()
+    t = _ALIASES.get(raw_t, raw_t)
+    if t == "invoke" and raw_t in SEMANTIC_METHODS and obj.get("method") is None:
+        obj["method"] = raw_t
     if t not in ACTION_TYPES:
         raise ActionParseError("unknown_action", f"unknown action type {t!r}; valid: {', '.join(sorted(ACTION_TYPES))}",
                                "type", obj)
@@ -307,10 +392,35 @@ def parse_action(obj: dict[str, Any], default_coord_space: str = "pixel") -> Act
             kw[n] = v
     if obj.get("amount") is not None:
         kw["amount"] = int(_coerce_num(obj["amount"], "amount"))
-    for n in ("text", "target", "target2", "app", "url", "direction", "reason"):
+    for n in ("text", "target", "target2", "app", "url", "direction", "reason", "method", "path", "tool",
+              "dispatch"):
         v = _coerce_str(obj.get(n), n)
         if v is not None:
             kw[n] = v
+    if t == "invoke" and "method" not in kw:
+        kw["method"] = "invoke"
+    if t == "shell":
+        cmd = obj.get("command", obj.get("argv", obj.get("cmd")))
+        if isinstance(cmd, str):
+            import shlex
+            try:
+                cmd = shlex.split(cmd)
+            except ValueError as e:
+                raise ActionParseError("bad_value", f"command could not be split: {e}", "command", obj) from None
+        if cmd is not None and (not isinstance(cmd, list) or not all(isinstance(c, str) for c in cmd)):
+            raise ActionParseError("bad_type", "command must be an argv list of strings", "command", obj)
+        kw["command"] = list(cmd or [])
+    if obj.get("args") is not None:
+        if not isinstance(obj["args"], dict):
+            raise ActionParseError("bad_type", "args must be an object", "args", obj)
+        kw["args"] = dict(obj["args"])
+    if obj.get("expect") is not None:
+        ex = obj["expect"]
+        if isinstance(ex, dict):
+            ex = [ex]
+        if not isinstance(ex, list):
+            raise ActionParseError("bad_type", "expect must be a list of postcondition objects", "expect", obj)
+        kw["expect"] = list(ex)
     for n in ("clear", "submit"):
         if n in obj:
             kw[n] = _coerce_bool(obj[n], n)
@@ -341,4 +451,6 @@ _ALIASES = {
     "navigate_home": "home", "press_home": "home", "goto": "navigate", "go_to_url": "navigate",
     "finished": "done", "finish": "done", "terminate": "done", "status": "done", "answer": "done",
     "call_user": "ask_user", "ask": "ask_user", "launch_app": "open_app",
+    "semantic": "invoke", "uia": "invoke", "run": "shell", "bash": "shell", "exec": "shell",
+    "api_call": "api", "call_api": "api", "set_value": "invoke", "toggle": "invoke",
 }

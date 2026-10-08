@@ -91,3 +91,23 @@ agent:
   max_tokens: null
   max_cost_usd: null      # 需要在 models.*.price 配置价格
   max_seconds: 900
+
+# v0.6 混合动作空间：code/API 优先、语义（后台）动作次之、像素 GUI 兜底；每种都过同一安全闸门与验证
+hybrid:
+  mode: hybrid            # hybrid | gui_only（消融基线：语义动作改写成前台点击 / 输入，提示词不列 invoke 与工具）
+  dispatch: auto          # invoke 默认投递：auto（后台优先、无生效证据且方法幂等时改走前台）| background | foreground
+  verify_background: true # 后台动作后重新观察，确认真的生效（勾选翻转 / 值写入 / 无障碍树或像素变化）
+  fallback_to_foreground: true
+  modality_recovery: true # 点击无效 → 语义动作；后台无效 → 前台点击（每个子目标各一次，并重新验证）
+
+tools:
+  shell:
+    enabled: false        # 默认关闭。打开时只允许 allow 白名单里的可执行文件；argv 直接 exec，不经过 shell
+    allow: []             # 例如 [python, git, ls]
+    workdir: null         # 默认 = tools.files.root
+    timeout: 20
+    confirm: true         # 每条命令都需要人工确认（安全闸门）；只建议在一次性沙箱里关掉
+    sandbox_prefix: []    # 可选外层沙箱，例如 [bwrap, --ro-bind, /, /, --dev, /dev, --unshare-net, --]
+  files:
+    root: null            # 非空时开启文件工具，路径限定在该目录内（拒绝 .. / 绝对路径 / 符号链接逃逸）
+    writable: true

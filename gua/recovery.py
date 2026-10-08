@@ -33,6 +33,7 @@ class Strategy(str, Enum):
     REGROUND_ZOOM = "reground_zoom"  # 局部放大重新定位（RegionFocus 思路）
     SCROLL_INTO_VIEW = "scroll"      # 目标在屏幕外
     UNDO = "undo"                    # 确认误操作后撤销
+    SWITCH_MODALITY = "switch_modality"  # v0.6：GUI 点击无效 → 语义动作；后台语义无效 → 前台点击（各一次）
     REPLAN = "replan"                # 交回规划器换路径
     GIVE_UP = "give_up"
 
@@ -55,11 +56,36 @@ class RecoveryPolicy:
     scroll_unit_px: int = 100
     _waits: int = 0
     _used: int = 0
+    _switched: int = 0
     history: list[str] = field(default_factory=list)
 
     def reset_subgoal(self) -> None:
         self._waits = 0
         self._used = 0
+        self._switched = 0
+
+    def _switch_modality(self, check: Check, action: Action, obs) -> Optional[RecoveryPlan]:
+        """换模态恢复（每个子目标最多一次）：同一目标、不同执行通道；动作仍经过安全闸门与验证。"""
+        if self._switched >= 1:
+            return None
+        from .env.base import SEMANTIC_BY_ROLE
+        err = (check.signals or {}).get("exec_error", "") or ""
+        el = obs.element(action.element_id) if obs is not None and action.element_id is not None else None
+        if action.type == "invoke" and ("background_no_effect" in err or check.verdict == Verdict.NO_EFFECT):
+            name = el.name if el is not None else action.target
+            if not name:
+                return None
+            self._switched += 1
+            return RecoveryPlan(Strategy.SWITCH_MODALITY, [Action("click", target=name)],
+                                "background action showed no effect; retry once with real (foreground) input")
+        if action.type == "click" and check.verdict == Verdict.NO_EFFECT and el is not None and el.enabled:
+            m = SEMANTIC_BY_ROLE.get(el.role)
+            if m in {"invoke", "toggle", "select", "expand"} and el.name:
+                self._switched += 1
+                return RecoveryPlan(Strategy.SWITCH_MODALITY,
+                                    [Action("invoke", method=m, target=el.name, dispatch="background")],
+                                    f"pointer click had no effect; retry once via the {m} accessibility action")
+        return None
 
     @property
     def exhausted(self) -> bool:
@@ -94,7 +120,7 @@ class RecoveryPolicy:
 
     # ---------------------------------------------------------------- 决策
     def decide(self, check: Check, action: Action, task_window: str = "",
-               last_failure: Optional[str] = None) -> RecoveryPlan:
+               last_failure: Optional[str] = None, obs=None, hybrid: bool = False) -> RecoveryPlan:
         if not self.enabled:
             return RecoveryPlan(Strategy.REPLAN, note="recovery disabled")
         err0 = (check.signals or {}).get("exec_error", "") or ""
@@ -124,6 +150,11 @@ class RecoveryPolicy:
 
         sig = check.signals or {}
         err = sig.get("exec_error", "") or ""
+        if hybrid:
+            sw = self._switch_modality(check, action, obs)
+            if sw is not None:
+                self.history.append(f"{check.verdict.value}->{sw.strategy.value}")
+                return sw
         if "out_of_bounds" in err:
             plan = RecoveryPlan(Strategy.SCROLL_INTO_VIEW, self._scroll_toward(sig), "target off screen; scroll toward it")
         elif "blocked_by_safety" in err:

@@ -127,6 +127,16 @@ class ExecResult:
     finished: float = 0.0
     output: str = ""         # 例如 ask_user 的回答
     route: str = ""          # Actual execution path for measurement, not a success claim
+    signals: dict = field(default_factory=dict)   # v0.6：模态 / 后台侵入检测 / 回退原因等执行层证据
+
+
+# v0.6：语义（后台）动作在各角色上的默认方法，供 actor 提示词与“换模态恢复”使用
+SEMANTIC_BY_ROLE = {
+    "button": "invoke", "link": "invoke", "menuitem": "invoke",
+    "checkbox": "toggle", "switch": "toggle",
+    "radio": "select", "tab": "select", "listitem": "select", "treeitem": "select",
+    "textbox": "set_value", "combobox": "expand",
+}
 
 
 class Env(ABC):
@@ -134,6 +144,34 @@ class Env(ABC):
     scroll_unit_px: int = 100          # 一格滚动大约多少截图像素（恢复策略按距离计算滚动格数）
     targeted_input: bool = False
     input_epoch: int = 0
+    # v0.6：是否实现了语义 / 后台动作（invoke）；实现的后端在 execute 里处理 type == "invoke"
+    semantic_actions: bool = False
+
+    def semantic_methods(self, element: UIElement) -> set[str]:
+        """该元素可用的语义方法（后端不支持语义动作时为空集）。"""
+        if not self.semantic_actions or element is None or not element.enabled:
+            return set()
+        m = SEMANTIC_BY_ROLE.get(element.role)
+        out = {"focus", "scroll_into_view"}
+        if m:
+            out.add(m)
+        if element.role == "combobox":
+            out |= {"collapse", "set_value"}
+        if element.is_password:
+            out.discard("set_value")
+        return out
+
+    def pointer_position(self) -> Optional[tuple[int, int]]:
+        """真实指针位置（后台动作侵入检测用）；未知返回 None。"""
+        return None
+
+    def foreground_token(self) -> str:
+        """当前前台窗口的稳定标识（后台动作侵入检测用）；未知返回空串。"""
+        return ""
+
+    def run_tool(self, action: Action) -> Optional[ExecResult]:
+        """在环境内部执行 shell / file 工具（例如远程沙箱）。返回 None 表示由 agent 侧 ToolRegistry 执行。"""
+        return None
 
     @abstractmethod
     def observe(self, with_elements: bool = True) -> Observation: ...

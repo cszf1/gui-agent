@@ -28,6 +28,18 @@ def region_diff(a: Image.Image, b: Image.Image, center: tuple[int, int], radius:
     return float(np.mean(np.abs(ra - rb) > 0.08))
 
 
+def region_crop_diff(a: Image.Image, b: Image.Image, box) -> float:
+    """指定矩形区域 (l, t, r, b) 的差异比例（后置条件 pixel_change 用）。"""
+    w, h = a.size
+    l, t, r, bt = (int(v) for v in box)
+    l, t, r, bt = max(0, l), max(0, t), min(w, r), min(h, bt)
+    if r <= l or bt <= t:
+        return 0.0
+    ra = np.asarray(a.convert("L").crop((l, t, r, bt)), dtype=np.float32) / 255.0
+    rb = np.asarray(b.convert("L").crop((l, t, r, bt)), dtype=np.float32) / 255.0
+    return float(np.mean(np.abs(ra - rb) > 0.08))
+
+
 def side_by_side(before: Image.Image, after: Image.Image, mark: Optional[tuple[int, int]] = None,
                  max_w: int = 1600) -> Image.Image:
     """把前后截图拼在一起交给 VLM 判断，并在动作点画一个红圈。"""

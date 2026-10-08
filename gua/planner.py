@@ -77,6 +77,13 @@ _ACTION_DOC = {
     "done": '{"type":"done", "text":"<answer if the task asks a question>"}   when THIS sub-goal is complete',
     "fail": '{"type":"fail", "text":"<reason>"}   if impossible',
 }
+_INVOKE_DOC = ('{"type":"invoke", "element_id": <id>, "method":"invoke|toggle|select|set_value|expand|collapse|'
+               'scroll_into_view|focus", "text":"<value for set_value>"}   accessibility action on a listed element '
+               '(methods in {braces} after an element); runs in the background without moving the mouse; prefer it '
+               'over clicking when listed')
+_EXPECT_DOC = ('Optional on any action: "expect":[{"kind":"text_appears","text":"..."}|{"kind":"element_state",'
+               '"name":"...","checked":true}|{"kind":"text_disappears","text":"..."}|{"kind":"output_contains",'
+               '"text":"..."}] = what must be true right after this action; it is checked and a mismatch is reported')
 _COORD_DOC = ('Instead of element_id/target you MUST give the point directly as "x","y" in {space} coordinates '
               '({hint}).')
 _COORD_HINT = {"norm1000": "0-1000 relative to the screenshot width/height", "norm1": "0-1 fractions",
@@ -164,6 +171,9 @@ class Actor:
         self.coord_space = coord_space   # None = planner–grounder 分离；否则 actor 直接给坐标
         self.policy = policy
         self.max_pixels = max_pixels     # coord_space=resized 时模型侧 smart_resize 的 max_pixels
+        # v0.6：语义动作提示（env.semantic_methods）与工具通道说明（ToolRegistry.prompt_docs）；None/空 = 不出现
+        self.semantic_hint = None
+        self.extra_docs: list[str] = []
 
     def system_prompt(self) -> str:
         bad = UNSUPPORTED.get(self.platform, set())
@@ -175,6 +185,11 @@ class Actor:
         if not self.policy.a11y_in_prompts:     # 纯视觉：没有元素列表，也就没有 element_id
             docs["click"] = docs["click"].split(" or with ")[0].replace('"element_id": <id>', '"target":"<visible element description>"')
         lines = [doc for name, doc in docs.items() if name not in bad]
+        if self.semantic_hint is not None and self.policy.a11y_in_prompts and "invoke" not in bad:
+            lines.append(_INVOKE_DOC)
+        lines += list(self.extra_docs or [])
+        if self.semantic_hint is not None or self.extra_docs:
+            lines.append(_EXPECT_DOC)
         if self.coord_space:
             lines.append(_COORD_DOC.format(space=self.coord_space, hint=_COORD_HINT.get(self.coord_space, "")))
         sysp = ACT_SYSTEM.format(pdesc=PLATFORM_DESC.get(self.platform, self.platform),
@@ -187,7 +202,14 @@ class Actor:
 
     def user_prompt(self, task, sg, total, obs, history, milestones, feedback="", notes="(none)") -> str:
         if self.policy.a11y_in_prompts:
-            els = "\n".join(e.brief() for e in obs.elements[: self.max_el]) or "(not available, use vision)"
+            def line(e):
+                b = e.brief()
+                if self.semantic_hint is not None:
+                    ms = sorted(self.semantic_hint(e) - {"focus", "scroll_into_view"})
+                    if ms:
+                        b += " {" + ",".join(ms) + "}"
+                return b
+            els = "\n".join(line(e) for e in obs.elements[: self.max_el]) or "(not available, use vision)"
         else:
             els = "(not provided: vision only, use the screenshot)"
         fb = f"Feedback from verifier: {feedback}" if feedback else ""

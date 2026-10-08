@@ -40,7 +40,7 @@ SENSITIVE_STATES = {"password", "unknown", "unreported"}
 CONFIRM_STATES = {"password", "unknown"}
 _PW_NAME = re.compile(r"password|passcode|passwd|密码|口令", re.I)   # 名字只作补充；主依据是 is_password
 # 安全副本 / 签名需要清洗的字符串字段（模型可能把秘密抄进任意一个）
-STR_FIELDS = ("text", "target", "target2", "reason", "url", "app")
+STR_FIELDS = ("text", "target", "target2", "reason", "url", "app", "path", "tool")
 
 
 def is_password_el(e) -> bool:
@@ -91,6 +91,15 @@ def carries_text(a) -> bool:
 def is_sensitive_type(a, obs=None, state: Optional[str] = None) -> bool:
     """这个动作携带的文字是否必须脱敏（只看输入目标，不看安全规则的结论）。"""
     st = state or focus_target(obs)[1]
+    if a.type == "invoke" and a.method == "set_value":
+        if not a.text:
+            return False
+        if SECRET_RE.search(a.text):
+            return True
+        element = obs.element(a.element_id) if obs is not None and a.element_id is not None else None
+        return element is None or is_password_el(element)
+    if a.type == "file" and a.text and SECRET_RE.search(a.text):
+        return True
     if a.type == "type":
         if a.element_id is not None:
             element = obs.element(a.element_id) if obs is not None else None
@@ -109,7 +118,7 @@ def safe_view(a, obs=None, state: Optional[str] = None) -> dict:
     """动作的可公开字典视图（日志 / 提示词 / 终端都用它）。"""
     d = a.to_dict()
     if is_sensitive_type(a, obs, state):
-        if a.type == "type":
+        if a.type in {"type", "invoke", "file"}:
             if "text" in d:
                 d["text"] = REDACTED
         elif "keys" in d:
@@ -131,7 +140,7 @@ def redacted_action(a, obs=None, state: Optional[str] = None, scrubber=None):
     字符串字段（text / target / target2 / reason / url / app），这样把秘密抄进 target / reason 也不会漏。
     """
     if is_sensitive_type(a, obs, state):
-        a = replace(a, text=REDACTED) if a.type == "type" else replace(a, keys=[REDACTED])
+        a = replace(a, text=REDACTED) if a.type in {"type", "invoke", "file"} else replace(a, keys=[REDACTED])
     if scrubber is None:
         return a
     changes: dict = {}

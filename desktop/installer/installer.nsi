@@ -20,14 +20,17 @@ UninstallIcon "${ICON}"
 
 Function .onInit
   SetShellVarContext current
+  SetRegView 64
   IfFileExists "$INSTDIR\*.*" 0 fresh
   IfFileExists "$INSTDIR\.gui-agent-program" owned 0
-  MessageBox MB_OK|MB_ICONSTOP "目标目录已有其他文件，请先卸载旧版 GUI Agent。"
+  MessageBox MB_OK|MB_ICONSTOP "目标目录已有其他文件，请先卸载旧版 GUI Agent。" /SD IDOK
+  SetErrorLevel 2
   Abort
   owned:
     ExecWait '"$INSTDIR\runtime\python.exe" -B -m gua.app_cleanup' $0
     ${If} $0 != 0
-      MessageBox MB_OK|MB_ICONSTOP "请先关闭 GUI Agent，然后重试安装。"
+      MessageBox MB_OK|MB_ICONSTOP "请先关闭 GUI Agent，然后重试安装。" /SD IDOK
+      SetErrorLevel 2
       Abort
     ${EndIf}
   fresh:
@@ -35,6 +38,7 @@ FunctionEnd
 
 Section "GUI Agent"
   SetShellVarContext current
+  SetRegView 64
   SetOutPath "$INSTDIR"
   File /r "${PAYLOAD}\*.*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -51,9 +55,11 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
+  SetRegView 64
   ExecWait '"$INSTDIR\runtime\python.exe" -B -m gua.app_cleanup --uninstall' $0
   ${If} $0 != 0
-    MessageBox MB_OK|MB_ICONSTOP "清理尚未完成。请关闭 GUI Agent 后再次卸载；程序与注册表项暂时保留。"
+    MessageBox MB_OK|MB_ICONSTOP "清理尚未完成。请关闭 GUI Agent 后再次卸载；程序与注册表项暂时保留。" /SD IDOK
+    SetErrorLevel 2
     Abort
   ${EndIf}
   SetOutPath "$TEMP"

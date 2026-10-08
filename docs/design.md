@@ -137,3 +137,20 @@ Actor 动作 → SafetyGuard.gate(意图) → HybridExecutor
    └─ 像素 GUI → env.execute
 → Verifier.check_step（含动作级后置条件）→ 子目标 check_goal（含子目标级后置条件）→ receipt
 ```
+
+
+## 10. v0.7 新模块与改动
+
+- `gua/llm/cua.py`：原生电脑工具适配器。模型一轮给出的多个动作放进批队列，**每次只交给主循环一个**；主循环执行、验证后
+  通过 `actor.record_outcome(action, res, check)` 回报。执行失败、验证 FAILED / BLOCKED、以及“激活类动作无效果”都会让同批剩余动作
+  不再执行（聚焦文本框无可见变化不算失败）。只读成员（screenshot / zoom / cursor_position）在适配器内部回答。
+  会话按子目标重置；截图历史成批裁剪以保持提示缓存前缀稳定。OpenAI 安全检查通过 `Action.provider_checks` 进入安全闸门。
+- `gua/som.py`：Set-of-Mark 叠加图；`Actor.som` 打开后用叠加图替代原截图，编号即 element_id。
+- `gua/grounding.py`：`GroundingResult.confidence`；`refine=True` 时两阶段（全屏 → 放大）定位，用两点一致性给置信度，
+  `min_confidence` 以下 agent 判定位失败。
+- `gua/verify/verifier.py`：`text_evidence()` 统一文字证据（词边界、否定词）；`check_goal` / `check_final` 的后置条件规则见审查记录。
+- 沙箱：`X-Gua-Control-Token` 人工交还令牌；`start_display_and_wm()` 冷启动顺序；守护进程子进程环境去掉令牌。
+- Windows 输入：`unicode_key_events()` + `SendInput(KEYEVENTF_UNICODE)`。
+
+限制更新：启用沙箱 shell 时 agent 与守护进程同 uid，控制令牌不能防御本机进程；setsid 逃逸的子孙进程不受进程组清理；
+MCP 尚不支持取消；新适配器未用真实 API 验证。

@@ -1,6 +1,8 @@
 # gui-agent（`gua`）：跨平台、可验证执行与失败恢复的 GUI Agent
 
-当前源码 **v0.6.0**：混合动作空间（语义 / 后台动作、受限 shell / 文件 / API 工具、像素 GUI 兜底）、动作级与子目标级后置条件、
+当前源码 **v0.7.0**：在 v0.6 基础上修复完成核验的文字证据误判、人工接管可被 agent 自行交还等 15 项审查问题，
+新增 Claude / OpenAI 原生电脑工具适配器（批量动作逐个验证、首个失败即停止、zoom）、Set-of-Mark 观察与置信度定位，
+详见 [docs/review-v0.7.md](docs/review-v0.7.md)。v0.6 内容：混合动作空间（语义 / 后台动作、受限 shell / 文件 / API 工具、像素 GUI 兜底）、动作级与子目标级后置条件、
 已验证完成凭据、换模态恢复、沙箱电脑（接管 / 快照 / 重置）、`gua mcp` 服务器与并行评测。v0.5.0 的 Windows 优先桌面 App 等功能保留。
 此前 v0.3/v0.3.1 的四轮安全审查修复一并保留，见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)。
 前身是只支持 Windows 的 `win-gui-agent`（`wga`）。研究方向 A：**执行验证与失败恢复**
@@ -13,6 +15,7 @@
 - 设计说明：[docs/design.md](docs/design.md)
 - 审查修复对照（四轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
 - v0.6 审查、修订与实测范围：[docs/review-v0.6.md](docs/review-v0.6.md)
+- v0.7 审查（发现表、修订、回归测试、能力升级）：[docs/review-v0.7.md](docs/review-v0.7.md)
 - 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)（v0.6 对标见 [§5](docs/research.md#5-v06-对标)）
 
 ## 桌面 App（v0.6 开发版）
@@ -28,6 +31,23 @@
 无 API Key 时可以从界面试运行本地表单。此演示使用预设动作，不代表真实模型自主任务的成功率。
 
 ## 更新日志
+
+### v0.7.0（源码；未发布 GitHub Release）
+
+- **完成核验**：`expect_text` / `text_appears` 改为词边界 + 否定词感知匹配（`Unsaved changes`、`Not saved`、`未保存`
+  不再算作“已保存”）；子目标后置条件未成立时不能被可见文字覆盖；收尾核验复查所有子目标的后置条件。
+- **人工接管**：交还控制权需要独立的人工令牌 `GUA_SANDBOX_CONTROL_TOKEN`（`gua sandbox handback`）；MCP 不再向模型提供 handback。
+- **沙箱守护进程**：应用白名单精确匹配；令牌不再出现在 argv，也不传给沙箱里启动的应用；畸形请求返回 JSON 错误；
+  本机沙箱先确认 X 可连接再启动 dbus / openbox（修复冷启动约 1/3 失败）。
+- **动作语义**：点击 / 滚动上的修饰键不再被静默丢弃；旧版 Claude 适配器不再把 triple / middle click、hold_key 换成别的动作；
+  坐标点击先解析点下控件，聚焦文本框不会被当作“不可重放的激活”。
+- **Windows 中文输入法**：ASCII 文本改用 `SendInput(KEYEVENTF_UNICODE)`，输入法处于中文模式时不再被截成拼音候选（未在真实 Windows 上验证）。
+- **MCP**：无效请求 `-32600`、未知工具 `-32602`、协议版本协商、`run_task(max_steps)` 不再改写会话配置。
+- **新：原生 computer-use 适配器**（`actor.kind: claude_toolset | openai_computer`）：Claude `computer_toolset_20260801` /
+  `computer_20251124` / `computer_20250124` 与 OpenAI Responses `computer` 工具；多轮会话、批量动作逐个经过闸门与验证、
+  首个失败即停止并回官方停止文本、zoom 原始分辨率裁剪、修饰键展开、截图历史批量裁剪、OpenAI 安全检查必须人工确认。
+- **新：Set-of-Mark**（`actor.som: true`）与**放大复核置信度定位**（`grounding.refine` / `min_confidence`）。
+- 测试：默认 602 passed；`GUA_TEST_NO_PLAYWRIGHT=1` 525 passed / 8 skipped（基线分别有 1 个和 2 个失败）。
 
 ### v0.6.0（源码与 Windows 安装包 CI；未发布 GitHub Release）
 
@@ -417,6 +437,17 @@ GitHub Actions：`core` 任务在 ubuntu / windows / macos × Python 3.10 / 3.12
 | 模型后端 | 🟡 只测了请求构造与响应映射（OpenAI 兼容含 GPT-5/o 系列参数、Anthropic Messages、computer-use 工具与拖拽、UI-TARS 解析、坐标变换）；**没有用真实 API 跑过任务**，GPT-5/o 系列参数兼容是按文档写的、未经真实调用验证 |
 | 脚本策略 | ⚠️ 只证明非模型部分可用；步骤级 L2 在脚本模式下是乐观桩，子目标 / 任务收尾的 L2 桩一律返回 uncertain（所以脚本任务必须靠可规则核验的 expect_text 才能完成），不代表真实模型能力 |
 | 研究结论 | ❌ 还没有任何真实模型实验数据；目前的数字（成功率 1.0 等）只来自脚本策略，**不能**当作方法有效的证据 |
+
+### v0.7 验证状态
+
+| 部分 | 实际端到端运行过 | 只有 fixture / 单元 / 替身测试 |
+|---|---|---|
+| 文字证据匹配、后置条件复查 | — | ✅ 单元回归（`test_review_v07.py`），并随全量 Web / 沙箱任务回归 |
+| 人工交还令牌、白名单、凭据隔离、畸形请求 | ✅ 真实守护进程子进程（HTTP）与本机 Xvfb 沙箱 | Docker 镜像未重新构建验证 |
+| 沙箱冷启动修复 | ✅ 本机连续 6 次双沙箱冷启动成功；全量沙箱用例通过 | — |
+| Claude / OpenAI 原生电脑工具 | 本地 HTTP 替身 + MockEnv 上完整跑通 agent 循环 | ❌ **没有调用真实 API** |
+| Set-of-Mark、置信度定位 | — | ✅ 单元测试与 MockEnv agent 循环 |
+| Windows KEYEVENTF_UNICODE 输入 | — | ✅ 事件构造与焦点核对用假模块测试；**未在 Windows 上运行** |
 
 ### v0.6 验证状态
 

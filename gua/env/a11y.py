@@ -328,11 +328,23 @@ def atspi_raws(node: dict[str, Any], scale: float = 1.0, depth: int = 0, max_dep
             "value": None if is_pw else (node.get("text") if role == "textbox" else node.get("value")),
             "checked": ("checked" in states) if role in {"checkbox", "radio", "switch"} else None,
             "is_password": is_pw,
-            "attrs": {"password": "true"} if is_pw else {},
+            "attrs": _atspi_attrs(node, is_pw),
         })
     for c in node.get("children", []) or []:
         out.extend(atspi_raws(c, scale, depth + 1, max_depth))
     return out
+
+
+def _atspi_attrs(node: dict, is_pw: bool) -> dict:
+    """v0.6：远程沙箱的语义动作需要节点路径与原始名字做身份核对；密码节点不保留名字。"""
+    a: dict = {"password": "true"} if is_pw else {}
+    if node.get("path"):
+        a["atspi_path"] = str(node["path"])
+        if not is_pw:
+            a["atspi_name"] = str(node.get("name") or "")
+    if node.get("actions"):
+        a["atspi_actions"] = ",".join(str(x) for x in node["actions"])[:120]
+    return a
 
 
 def atspi_tree_to_elements(tree: dict, screen: tuple[int, int], scale: float = 1.0, max_elements: int = 200):

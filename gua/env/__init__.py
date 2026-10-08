@@ -11,7 +11,7 @@ from typing import Any
 
 from .base import Env, ExecResult, Observation, UIElement
 
-PLATFORMS = ("windows", "macos", "linux", "android", "web", "mock")
+PLATFORMS = ("windows", "macos", "linux", "android", "web", "mock", "remote")
 
 
 def detect_platform() -> str:
@@ -45,6 +45,7 @@ def platform_status() -> dict[str, str]:
         "android": "ok" if shutil.which("adb") else "adb not found in PATH",
         "web": "ok" if has("playwright") else "pip install 'gui-agent[web]' && playwright install chromium",
         "mock": "ok",
+        "remote": "ok (needs a running sandbox: gua sandbox up)",
     }
     return st
 
@@ -73,6 +74,13 @@ def make_env(platform: str = "auto", **kw: Any) -> Env:
     if p == "mock":
         from .mock import MockEnv
         return MockEnv()
+    if p == "remote":
+        # v0.6：沙箱电脑（gua/sandbox）。url + token（token 建议放环境变量：env.remote.token_env）
+        from .remote import RemoteEnv
+        token = kw.get("token") or os.environ.get(kw.get("token_env") or "GUA_SANDBOX_TOKEN", "")
+        if not kw.get("url"):
+            raise ValueError("remote platform needs env.remote.url (e.g. http://127.0.0.1:8765)")
+        return RemoteEnv(kw["url"], token, **_pick(kw, "timeout", "max_elements", "takeover_timeout"))
     raise ValueError(f"unknown platform {p!r}; choose from {PLATFORMS}")
 
 

@@ -60,8 +60,9 @@ def foreground_equivalent(a: Action, obs: Optional[Observation]) -> Optional[Act
     if m == "set_value":
         if el is None or el.role not in {"textbox", "combobox"}:
             return None
-        return Action("type", element_id=el.id, target=a.target, text=a.text, clear=True, reason=a.reason,
-                      expect=list(a.expect))
+        x, y = el.center
+        return Action("type", element_id=el.id, x=x, y=y, target=a.target, text=a.text, clear=True,
+                      reason=a.reason, expect=list(a.expect))
     return None
 
 

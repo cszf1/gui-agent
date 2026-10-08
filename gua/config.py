@@ -54,7 +54,7 @@ def build_env(cfg: dict, platform: Optional[str] = None) -> Env:
     e = dict(cfg.get("env") or {})
     p = platform or resolve_platform(cfg)
     e.update(e.pop(p, {}) or {})            # 平台专属小节，例如 env.web.headless
-    for k in ("windows", "macos", "linux", "android", "web", "mock", "platform"):
+    for k in ("windows", "macos", "linux", "android", "web", "mock", "remote", "platform"):
         e.pop(k, None)
     if p == "web" and not e.get("allowed_domains"):
         # v0.3：safety.allowed_domains 也在浏览器层强制执行（不只是 navigate 检查）

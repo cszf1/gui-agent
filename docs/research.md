@@ -88,9 +88,70 @@
 
 ## 4. 暂不采用（及原因）
 
+> v0.6 更新：下面的“代码即动作 / 本地代码执行”和“MCP 工具接入”已以受限形式实现（默认关闭的 shell / 文件 / API 工具通道，
+> 结果仍经同一闸门与验证器；`gua mcp` 服务器），见第 5 节与 [design.md](design.md) §9。其余条目仍未采用。
+
 - **代码即动作 / 本地代码执行**（OpenAI CUA sample、Agent S3 code agent）：安全面大，且会绕过 GUI 执行验证，与方向 A 的研究对象冲突。保留为未来扩展（可作为独立“工具通道”，验证器仍只看 GUI 结果）。
 - **推测式多动作**（UFO²）：会让“每步验证”的语义变复杂；可在 L1 能定论时批量执行，列为 TODO。
 - **多轮次 + Behavior Judge 挑选**（Agent S3 bBoN）：成本 N 倍，超出本科 SRTP 预算；但其“行为叙述”思路可用于我们的轨迹报告。
 - **MCP 工具接入**：GUI 之外的工具通道（UFO³、Agent TARS、GUI-Owl-1.5）。接口上留了位置（Action 可扩展），本版本未实现，避免在 GUI 验证之外引入新的成功判定来源。
 - **OmniParser / SoM 视觉检测**（WAA）：需要 GPU 与额外模型；当前以 a11y + grounding VLM 为主，没有 a11y 的界面（游戏、Canvas）退化为纯视觉。
 - **知识库 RAG / 技能库**（UFO²、AppAgent、Cradle）：需要先积累轨迹；本版本的 JSONL 轨迹即为后续数据来源。
+
+## 5. v0.6 对标
+
+> 资料抓取时间：2026-10-08。下表每一格只写**所引页面上能看到的内容**；页面没写的标“未见”（不代表没有该能力），
+> 来自第 1 节旧调研、本次没有重新核对的内容标“（第 1 节，未复核）”。产品名与功能状态以页面为准，会随时间变化。
+
+来源（本节编号引用）：
+
+- [C1] Claude computer use tool：https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
+- [X1] Codex / ChatGPT Computer Use：https://developers.openai.com/codex/app/computer-use
+- [O1] ChatGPT agent（含 Operator 说明）：https://help.openai.com/en/articles/11752874-chatgpt-agent/
+- [G1] Grok Bot，Use the computer and apps：https://docs.x.ai/grok-bot/computer-and-apps
+- [D1] Cua Driver 文档：https://cua.ai/docs/cua-driver ；[D2] Cua 博客 Inside Windows computer-use：https://cua.ai/blog/inside-windows-computer-use
+- [B1] Cua-Bench 任务定义：https://cua.ai/docs/cua-bench/reference/task-definition
+- [U1] UFO² Hybrid GUI–API Actions：https://microsoft.github.io/UFO/ufo2/core_features/hybrid_actions/
+- [BU] browser-use README：https://github.com/browser-use/browser-use
+- [AS] Agent S README：https://github.com/simular-ai/Agent-S
+- [TD] UI-TARS-desktop README：https://github.com/bytedance/UI-TARS-desktop
+
+### 5.1 能力 × 系统对照表
+
+| 能力 | Claude computer use 工具 [C1] | Codex / ChatGPT Computer Use [X1] | ChatGPT agent / Operator [O1] | Grok Bot 云电脑 [G1] | Cua Driver [D1][D2] / Cua-Bench [B1] | UFO² [U1] | browser-use [BU] | Agent S [AS] | UI-TARS-desktop [TD] | **gua v0.6** |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 当前可用性 | 可用（Claude API 等，`computer_toolset_20260801`） | macOS / Windows 桌面 App 插件 | **页面写明“ChatGPT agent is no longer available”**；Operator 已并入 agent，Operator 网站不可访问 | 可用 | 开源，macOS / Windows / Linux | 开源，Windows | 开源库 + 云服务 | 开源框架 | 开源桌面 App | 开源研究代码，未发布 Release |
+| 观察 | 截图 + `zoom` 局部放大；不含无障碍树 | 屏幕画面（macOS 需屏幕录制 + 辅助功能权限） | 虚拟浏览器窗口截图 | 页面未细述 | 窗口像素 + UIA/MSAA、AX、AT-SPI 无障碍树 | UIA 控件 + 视觉检测（第 1 节，未复核） | 浏览器（DOM，第 1 节，未复核） | 截图 + grounding 模型 | VLM 截图识别 | 截图 + 统一无障碍元素（UIA / AX / AT-SPI / uiautomator / DOM） |
+| 混合动作（代码 / API + GUI） | 与 bash、文本编辑工具同用 | 有插件 / MCP 时建议优先结构化集成；shell 与文件编辑走沙箱和审批设置 | apps（connectors）作为数据源 | 浏览器 + 命令行 + 文件 + connectors；有 connector 时优先 | 动作层优先调用 UIA Invoke/Toggle/Value 等模式，失败再像素输入 | **API 优先、GUI 兜底**（MCP 服务器包装 Excel/Word/PowerPoint COM 等），由模型选择 | 自定义 Tools、MCP（README 指向文档） | 可选本地 coding 环境（Python / Bash） | Agent TARS：GUI / DOM / 混合浏览器策略、MCP 工具 | 语义动作（invoke）+ 受白名单约束的 shell / 文件 / 注册 API，GUI 兜底；默认全部工具关闭 |
+| 后台执行（不抢用户指针 / 前台） | 由集成方的环境决定（参考实现在 Docker + Xvfb 中） | **Windows 只能前台**（会移动指针、占用前台）；macOS 可在后台跑限定任务 | 云端虚拟浏览器 | 云端电脑，每个 Bot 一块屏幕 | **默认 background**；不会静默抢前台，必要时返回 `background_unavailable` 由调用方选择 `dispatch:"foreground"`；独立合成光标 | 未见（本页） | 未见（本页） | 未见 | 本地 / 远程 operator | Web DOM 与 Windows UIA 语义路径不移动指针；沙箱电脑内 AT-SPI 语义动作；侵入检测记录指针 / 前台变化 |
+| 动作后“真的生效了吗”的核验 | 文档建议提示模型每步截图并自评；承认 Claude 有时不检查结果就假定成功 | 未见专门机制（示例提示“每次修改后重跑同一 UI 流程”） | 未见 | 未见 | 博客把 verification 列为动作层能力之一，并说明遮挡截图会被标记；细节未见 | 常见陷阱中提醒“API 执行要配合截图验证” | 未见（本页） | 反思 agent（README） | 未见 | **规则验证每一步**：后置条件（勾选翻转、值相等、选中、焦点、文本出现/消失、URL、像素区域）+ 无障碍树差分；后台动作无生效证据时不算成功 |
+| 失败后换模态恢复 | 未见 | 未见 | 未见 | 未见 | 把 `background_unavailable` 等作为显式错误返回给调用方 | API 不可用时回退 GUI | 未见 | 未见 | 未见 | GUI 点击无效 → 语义动作；后台语义无效 → 前台（各一次）；非幂等 invoke 不自动重放 |
+| 完成结论的证据 | 模型最终文本回复 | 未见 | 输出含来源链接或截图 | 结果文件 / 预览 | 轨迹录制（文档目录有 trajectories 页，未细读） | 评测 agent / 日志（第 1 节，未复核） | 未见（本页） | 未见 | 事件流（Agent TARS） | **完成凭据**（receipts.json）：结论、证据等级、逐步模态 / 路由 / 后置条件、判定时刻截图与无障碍树 SHA-256 |
+| 安全闸门 / 人工确认 | 截图提示注入分类器；建议对有实际后果的操作请人确认；SDK 提供审批回调 | 按 App 授权（可“Always allow”）；敏感或干扰性操作前请求许可；不能自动操作终端和管理员授权 | 高影响操作需确认、提示注入监控、部分网站“watch mode”、网站黑名单 | 敏感步骤请用户接管；本地电脑命令需开启并审批 | 未见（本页） | 未见（本页） | 云浏览器的隐身 / 验证码相关能力（不同取向） | README 警告会执行任意代码 | 未见 | 同一闸门覆盖 GUI / 语义 / shell / 文件 / API；换模态生成的前台动作重新过闸，拒绝记忆共享 |
+| 人工接管 | 未见 | 可随时停止任务或接管电脑 | **Take over browser**：用户控制期间不截图，交还后尝试接续 | 可打开电脑接管密码 / 2FA / CAPTCHA / 支付等步骤 | 未见 | 未见（本页） | 未见 | 未见 | 未见 | 沙箱 `takeover` 期间拒绝 agent 的动作与截图；`handback` 后 epoch+1，旧观察全部失效 |
+| 隔离环境 / 快照重置 | 建议专用 VM / 容器；参考实现为 Docker | Windows 可在虚拟机里运行以免占用主桌面 | 云端虚拟浏览器 | 持久云电脑；Reset 从上次保存的快照重建（Bot 之间的屏幕不是安全边界） | Cua Sandbox；Cua-Bench 每个任务变体启动沙箱，`setup` → agent 或 `solve` oracle → `evaluate` | 未见（本页） | 本地或云浏览器 | 未见 | 远程 computer operator | 本机 Xvfb 沙箱电脑（快照 / 重置 / noVNC）；Dockerfile 已写但**镜像未构建** |
+| MCP 暴露 | 未见（本页） | 插件包含 MCP 服务器 | 未见 | 未见 | `cua-driver mcp` | 内部用 MCP 服务器组织动作 | 文档提及 MCP | 未见 | MCP 集成 | `gua mcp`：observe / act / verify / run_task / takeover / handback / snapshot / reset |
+| 基准 / 评测接入 | 未见（本页） | 未见 | 未见 | 未见 | Cua-Bench：`@cb.tasks_config` / `setup_task` / `solve_task` / `evaluate_task`，奖励为 `list[float]` 均值 | WAA / OSWorld（第 1 节，未复核） | 自有 benchmark | OSWorld / WAA / AndroidWorld 成绩（README 自报） | 未见 | 自有任务集 + `gua eval --workers N`；Cua-Bench 子集兼容层、OSWorld 形状 JSON 子集转换（见 5.3） |
+
+### 5.2 gua 的差异点（不是“更强”的证据）
+
+下面四点是 gua 的设计取舍，在上表所引页面里没有看到同样的组合；**这只说明设计不同，不能证明效果更好**——
+gua 还没有任何真实模型实验数据（见 README“哪些验证过”）。
+
+1. **已验证完成凭据**：完成结论附带可复查证据（证据等级、后置条件逐条结果、判定时刻画面摘要），续跑时先在当前画面重新验证。
+   凭据证明的是“界面上可观察到的状态”，不是服务器端业务事实。
+2. **换模态恢复**：GUI 点击无效时改用语义动作，后台语义动作没有生效证据时改走前台；非幂等的 invoke 不自动重放，避免执行两次。
+3. **后台动作的效果核验**：Cua Driver 的取向是“诚实地报告后台不可用”；gua 在此之上要求后台动作**证明自己生效**
+   （勾选翻转、值写入、无障碍树或像素变化），否则不算成功。
+4. **跨模态的同一安全闸门**：GUI、语义动作、shell、文件、API 走同一个 SafetyGuard；换模态生成的动作重新过闸，拒绝记忆共享，
+   不能靠换一种模态绕过拒绝。
+
+### 5.3 这一版的评测证据到哪一步
+
+- `docs/benchmarks/modalities-2026-10-08.json`：**脚本策略（固定 demo 步骤）**在本机沙箱电脑与 mock 故障注入上的模态对比，
+  标签即写明“NOT model evidence”。它说明执行 / 验证 / 恢复管线按设计工作（例如后台投递被丢弃、指针失效时换模态恢复能完成任务，
+  去掉换模态恢复则失败），不说明任何模型能完成任务。
+- Cua-Bench 兼容层（`gua/eval/cuabench_compat.py`）是**子集 shim**，不是官方 `cua-bench` 包：官方文档示例 `hello_file_env` 代码不改即可在
+  gua 沙箱（`--shell`）里用 oracle 跑通；bench_ui / pywebview 窗口相关方法未实现，调用会抛 `NotImplementedError`。
+- OSWorld 适配（`gua/eval/osworld.py`）只转换能忠实复现的子集（launch / execute / command / sleep；`exact_match`、`check_include_exclude`）。
+  `tasks/osworld_subset/gua_form_pro.json` 是**按 OSWorld 任务形状手写的合成任务，不是 OSWorld 官方任务**，不能当作 OSWorld 成绩。

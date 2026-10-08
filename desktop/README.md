@@ -63,7 +63,7 @@ Windows 的 API Key 使用 Electron `safeStorage`（操作系统保护）加密�
 npm run dist:win
 ```
 
-输出为 `desktop/release/GUI-Agent-0.5.0-x64-Setup.exe`。
+输出为 `desktop/release/GUI-Agent-0.6.0-x64-Setup.exe`。
 安装包包含独立 Python 执行引擎和 Chromium，最终用户无需另外安装 Python、Node.js 或修改 YAML。
 安装包尚未配置代码签名。
 

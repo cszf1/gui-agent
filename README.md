@@ -1,6 +1,7 @@
 # gui-agent（`gua`）：跨平台、可验证执行与失败恢复的 GUI Agent
 
-当前源码 **v0.5.0**：Windows 优先的桌面 App、控件原生执行、观察与动作绑定、快速稳定等待和结果核验。
+当前源码 **v0.6.0**：混合动作空间（语义 / 后台动作、受限 shell / 文件 / API 工具、像素 GUI 兜底）、动作级与子目标级后置条件、
+已验证完成凭据、换模态恢复、沙箱电脑（接管 / 快照 / 重置）、`gua mcp` 服务器与并行评测。v0.5.0 的 Windows 优先桌面 App 等功能保留。
 此前 v0.3/v0.3.1 的四轮安全审查修复一并保留，见下方更新日志与 [docs/review-fixes.md](docs/review-fixes.md)。
 前身是只支持 Windows 的 `win-gui-agent`（`wga`）。研究方向 A：**执行验证与失败恢复**
 （时间失配：页面没刷新就判断、窗口被最小化/抢焦点、目标在屏幕外……）。
@@ -10,7 +11,7 @@
 
 - 设计说明：[docs/design.md](docs/design.md)
 - 审查修复对照（四轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
-- 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)
+- 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)（v0.6 对标见 [§5](docs/research.md#5-v06-对标)）
 
 ## 桌面 App（v0.5 开发版）
 
@@ -25,6 +26,30 @@
 无 API Key 时可以从界面试运行本地表单。此演示使用预设动作，不代表真实模型自主任务的成功率。
 
 ## 更新日志
+
+### v0.6.0（源码；未发布 GitHub Release，未推送）
+
+- **混合动作空间**：新增语义动作 `invoke`（invoke / toggle / select / set_value / focus / expand / collapse / scroll_into_view）
+  与 shell / 文件 / 注册 API 工具。工具默认全部关闭；shell 只允许白名单可执行文件、argv 直接 exec、不继承密钥环境变量。
+  `hybrid.mode: gui_only` 为消融基线（语义动作改写成前台点击 / 输入）。
+- **后置条件**：actor 可为每一步预测 `expect`（文本出现 / 消失、元素状态、窗口标题、URL、像素区域、工具输出），规则逐条核验，
+  全部成立才算成功证据。规划器也可为子目标给出后置条件：`check_goal` 中任一明确不成立即失败，`check_final` 收尾时重新核验。
+- **后台执行与效果核验**：Web 绑定观察到的 DOM 节点、Windows 走 UIA 模式，均不移动指针；后台动作后检测侵入（指针 / 前台变化）
+  并要求生效证据，没有证据时幂等方法改走前台，非幂等 `invoke` 不自动重放。
+- **换模态恢复**：GUI 点击无效 → 语义动作；后台语义无效 → 前台（各一次），换模态生成的动作重新经过安全闸门。
+- **已验证完成凭据**：`receipts.json` 记录结论、证据等级、逐步模态 / 路由 / 后置条件和判定时刻画面摘要；`gua run --stream`
+  输出清洗后的事件流；`--resume` 从 checkpoint 续跑，已完成子目标先在当前画面重新验证。
+- **沙箱电脑**：`gua sandbox up` 在本机起 Xvfb + AT-SPI + openbox（可选 noVNC）+ HTTP 守护进程；`--platform remote` 通过
+  `RemoteEnv` 操作；支持人工接管 / 交还（接管期间拒绝 agent 动作与截图）、快照 / 重置。附 `sandbox/Dockerfile`。
+- **`gua mcp`**：MCP stdio 服务器，提供 observe / act / verify / run_task / takeover / handback / snapshot / reset / live_view；
+  `act` 返回规则验证结论，需确认的动作默认拒绝。
+- **评测**：`gua eval --workers N` 并行（remote 任务每个 worker 一台本机沙箱电脑）；新增沙箱任务 `tasks/sandbox/`、
+  Cua-Bench 任务目录子集兼容层、OSWorld 形状任务 JSON 子集转换，以及脚本策略的模态对比
+  （`scripts/benchmark_modalities.py` → `docs/benchmarks/modalities-2026-10-08.json`）。
+- 打包：`gua/sandbox/apps/` 成为包，`gua_form.py` 随 wheel 安装；新增 `MANIFEST.in`，sdist 带上 `sandbox/Dockerfile`、
+  `entrypoint.sh`、`configs/`、`tasks/`、`docs/`。
+
+v0.6 各部分实际验证到哪一步，见下方 [v0.6 验证状态](#v06-验证状态)。
 
 ### v0.5.0（源码与 Windows 安装包 CI；未发布 GitHub Release）
 
@@ -213,8 +238,16 @@ gua/
   logger.py report.py   轨迹 JSONL + 截图 + HTML 回放
   scripted.py     脚本策略（离线“假模型”，测试 / CI / 演示用）
   eval/           runner.py（指标）checkers.py（判分）disturb.py（按步注入干扰）
+                  v0.6：runner.run_suite_parallel、cuabench_compat.py（Cua-Bench 子集）、osworld.py（OSWorld 形状子集）
+  hybrid.py       v0.6 混合执行器（语义 / 后台动作的侵入与生效检测、换模态）
+  tools/          v0.6 shell / 文件 / API 工具通道（默认关闭）
+  verify/postconditions.py receipts.py   v0.6 后置条件、完成凭据
+  env/remote.py   v0.6 RemoteEnv（HTTP 操作沙箱电脑）
+  sandbox/        v0.6 沙箱守护进程 daemon.py、本机启动器 local.py、演示应用 apps/gua_form.py
+  mcp_server.py   v0.6 `gua mcp`
 configs/          default.yaml、models/*.yaml、ablations/*.yaml、web_local.yaml、mock.yaml
-tasks/            windows/ macos/ linux/ android/ web/ + web_assets/*.html（自包含的本地网页任务）
+tasks/            windows/ macos/ linux/ android/ web/ + web_assets/*.html（自包含的本地网页任务）；v0.6：sandbox/ cuabench/ osworld_subset/（合成）
+sandbox/          v0.6 Dockerfile + entrypoint.sh（镜像未构建验证）
 tests/            mock 单元测试、fixture 解析测试、真实 Chromium 集成测试
 ```
 
@@ -292,6 +325,7 @@ gua eval tasks/web --policy scripted                       # 离线
 gua eval tasks/web -m $M --repeats 3 --tag main             # 真实模型
 gua eval tasks/windows -m $M -c configs/ablations/raw_loop.yaml --tag raw
 python scripts/compare.py runs/summary-*.json               # 汇总成 Markdown 表
+gua eval tasks/sandbox --policy scripted --workers 2       # v0.6：并行，每个 worker 一台本机沙箱电脑（需 Xvfb / AT-SPI 等）
 ```
 
 任务 JSON 字段见 `gua/eval/runner.py` 顶部注释：`platform`、`instruction`、`task_window`、`start_url`、`setup`、`checks`、
@@ -341,6 +375,16 @@ python -B -m pytest -q -p no:cacheprovider               # 不写字节码、不
 GUA_TEST_NO_PLAYWRIGHT=1 python -B -m pytest -q -p no:cacheprovider   # 模拟没装 Playwright：4 个 Web 模块整体跳过
 ```
 
+v0.6.0 在沙箱（Linux aarch64，Python 3.12.15，Playwright + Chromium headless，另装 Xvfb / xdotool / openbox / x11vnc /
+websockify / dbus-x11 / python3-pyatspi / gir1.2-gtk-3.0 以运行沙箱电脑测试），`NO_PROXY=127.0.0.1,localhost`：
+
+- `python -B -m pytest -p no:cacheprovider`：**530 passed, 0 skipped**（因单条命令 120 s 限制分两段运行：
+  沙箱相关的 `tests/test_v06_eval_adapters.py` + `tests/test_v06_remote.py` 为 20 passed，其余 510 passed）。
+- `GUA_TEST_NO_PLAYWRIGHT=1`：**455 passed, 8 skipped**（7 个 Web 模块整体跳过 + `test_v06_mcp.py` 中 1 个真实 Chromium 用例）。
+- 没有沙箱电脑前置依赖（Xvfb、AT-SPI 等）时，沙箱用例自动跳过（`test_v06_remote.py` 整个模块计 1 个 skip，
+  `test_v06_eval_adapters.py` 4 个 skip）；在加入 `test_v06_subgoal_postconditions.py`（4 个用例）之前实测为 509 passed, 5 skipped。
+- 基线：f24578b 上同一命令为 453 passed。
+
 v0.3.1 在沙箱（Linux aarch64，Python 3.12，Playwright 1.63 + Chromium headless）中：**189 passed**
 （v0.3 的 130 个 + 第二轮新增 59 个）；`GUA_TEST_NO_PLAYWRIGHT=1` 时 **166 passed, 3 skipped**（跳过的是
 `test_web_allowlist.py`、`test_web_integration.py`、`test_web_review_v031.py` 三个模块）。本轮另在 Windows 11 / Python 3.12.10 上复跑原始基线，结果同为 189 passed；
@@ -365,10 +409,26 @@ GitHub Actions：`core` 任务在 ubuntu / windows / macos × Python 3.10 / 3.12
 | 脚本策略 | ⚠️ 只证明非模型部分可用；步骤级 L2 在脚本模式下是乐观桩，子目标 / 任务收尾的 L2 桩一律返回 uncertain（所以脚本任务必须靠可规则核验的 expect_text 才能完成），不代表真实模型能力 |
 | 研究结论 | ❌ 还没有任何真实模型实验数据；目前的数字（成功率 1.0 等）只来自脚本策略，**不能**当作方法有效的证据 |
 
+### v0.6 验证状态
+
+| 部分 | 实际端到端运行过 | 只有 fixture / 单元 / 假模块测试 |
+|---|---|---|
+| 混合执行器、后置条件、换模态恢复、工具通道 | 真实 Chromium（Web DOM 语义路径）；本机沙箱电脑（Xvfb + AT-SPI，语义动作不移动指针、前台输入移动指针、失配目标拒绝） | 换模态恢复的故障场景（后台投递丢失、指针失效）只在 MockEnv 故障注入里出现 |
+| Windows UIA 后台语义执行 | ❌ 未在 Windows 真机运行 | ✅ 仅用假 UIA 模块测试 |
+| 沙箱电脑：接管 / 交还、快照 / 重置、并行隔离 | ✅ 本机 Xvfb 模式（与当前用户同权限，**不是安全隔离**） | — |
+| `sandbox/Dockerfile` 镜像 | ❌ **镜像从未构建**，也未在容器里运行 | — |
+| `gua mcp` | ✅ stdio 子进程对真实 Chromium、对本机沙箱电脑 | — |
+| 完成凭据、事件流、续跑 | — | ✅ MockEnv 单元测试 |
+| `gua eval --workers N` | ✅ 2 个 worker 各自一台本机沙箱电脑（脚本策略） | — |
+| Cua-Bench 兼容层 | ✅ 文档示例 `hello_file_env` 用 oracle、`gua_form_subscribe` 用 oracle 与脚本化 gua agent，在本机沙箱电脑上跑通 | 兼容层是子集，不是官方 `cua-bench` 包；未与官方 `cb` CLI 对照 |
+| OSWorld 适配 | ✅ 合成任务 `gua_form_pro.json` 在沙箱里跑通 | **合成任务，不是 OSWorld 官方任务**，没有任何 OSWorld 成绩 |
+| 模态基准 `docs/benchmarks/modalities-2026-10-08.json` | ✅ 已运行 | ⚠️ **脚本策略（固定 demo 步骤）**，不是模型证据 |
+| 真实模型 API | ❌ v0.6 没有用任何真实模型 API 跑过任务 | 只测了请求构造与响应映射 |
+
 ## 已知限制
 
 见 [docs/design.md §8](docs/design.md)。主要是：Wayland 不支持、Android 中文输入需 ADBKeyboard、Claude computer-use 采用无状态逐步调用、
-未实现 MCP / 代码动作 / OmniParser。v0.3 新增的限制说明：
+未实现 OmniParser（MCP 与代码 / 文件 / API 工具通道 v0.6 已以受限形式实现）。v0.3 新增的限制说明：
 
 - token / 成本上限只能在调用返回后才知道用量，所以语义是“累计达到上限后拒绝之后所有调用”，最后一次调用可能让累计值略超上限（不超过单次用量）。
 - 拒绝的“同一动作”仍依赖观察中的目标身份：Web 点击 / 回车 / 提交优先共享 DOM 提交目标 ID，其他情况使用目标名或坐标；

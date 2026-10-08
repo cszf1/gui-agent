@@ -1,4 +1,4 @@
-# 设计说明（v0.2 跨平台版；v0.3 审查修复见 [review-fixes.md](review-fixes.md)）
+# 设计说明（v0.2 跨平台版起；v0.3 审查修复见 [review-fixes.md](review-fixes.md)；v0.6 新模块见 §9）
 
 > v0.3 对本文描述的主循环有 4 处行为变化：①所有执行动作（含恢复动作）统一经过安全闸门，拒绝是终止性的；
 > ②任务收尾核验总是运行，只有明确 success 才算完成，uncertain 不算；③预算在模型调用边界硬性执行（`budget_exhausted`）；
@@ -101,7 +101,38 @@ Planner ──subgoals(expected, evidence, expect_text)──▶ 每个子目标
 - 脚本策略（`--policy scripted`）只验证非模型部分；L2 是乐观桩，不能代表真实模型表现
 - Claude computer-use actor 为每步无状态调用（不保留 tool_result 链），与官方参考实现不同
 - Android 非 ASCII 输入需要 ADBKeyboard；Linux 仅支持 X11；macOS 需要“辅助功能 + 屏幕录制”权限
-- 未实现：MCP 工具通道、代码动作、推测式多动作、OmniParser 视觉检测（见 research.md 第 4 节）
+- 未实现：推测式多动作、OmniParser 视觉检测（见 research.md 第 4 节）；MCP 与代码 / 文件 / API 工具通道 v0.6 已以受限形式实现（见 §9）
 - 视觉验证器本身需要单独标注和评测（Microsoft 关于 CUA verifier 的研究提醒）
 - 敏感输入分类与已知秘密清洗共同保护输出；桌面与 Android 焦点仍依赖无障碍树。`AgentConfig.secrets` 从首次请求前登记，
   运行中的未知秘密不能靠字符串替换自动识别；敏感状态后的截图一律不发送/保存，纯视觉能力因此可能被终止。详见 README“已知限制”与 review-fixes.md 第三轮。
+
+## 9. v0.6 新模块
+
+v0.6 把“执行验证与失败恢复”从像素 GUI 扩展到多种执行模态，并让完成结论可复查。所有新路径共用同一个 SafetyGuard、
+Verifier 与 Scrubber；对标资料与差异点见 [research.md §5](research.md#5-v06-对标)。
+
+| 模块 | 作用 | 验证情况 |
+|---|---|---|
+| `gua/hybrid.py` | 混合执行器：code/API 优先、语义（后台）动作次之、像素 GUI 兜底。后台尝试前检查模态遮挡；之后做侵入检测（指针 / 前台）与生效检测；幂等方法无生效证据时可改走前台，非幂等 `invoke` 不自动重放（返回 `background_no_effect`）。`hybrid.mode: gui_only` 为消融基线 | mock + 真实 Chromium + 本机沙箱电脑 |
+| `gua/tools/registry.py` | shell / 文件 / 注册 API 通道。默认全部关闭；shell 只允许白名单可执行文件、argv 直接 exec、最小环境、超时与 rlimit；文件限定在根目录 | 单元测试 |
+| `gua/verify/postconditions.py` | 规则后置条件（`text_appears` / `text_disappears` / `element_state` / `window_title` / `url` / `pixel_change` / `output_contains`），结论只有 pass / fail / unknown；全部 pass 才算成功证据；密码元素的值从不读取 | 单元测试 + 端到端 |
+| 子目标级后置条件（`planner.py` / `verifier.py`） | 规划器可为子目标给出后置条件（校验后最多 8 条）。`check_goal`：任一明确不成立 → 失败；全部成立且无 `expect_text` → 成功；有 `expect_text` 时仍需文本证据。`check_final` 对没有 `expect_text` 的子目标重新核验其后置条件 | `tests/test_v06_subgoal_postconditions.py` + 沙箱任务 |
+| `gua/env/web.py` / `gua/env/windows.py` + `uia_execution.py` | 后台语义执行：Web 绑定观察到的 DOM 节点（身份复核，遮挡目标与密码 `set_value` 拒绝）；Windows 用 UIA Invoke/Toggle/SelectionItem/Value/ExpandCollapse/ScrollItem 模式，缺模式返回 `background_unavailable` | Web：真实 Chromium；**Windows：仅假 UIA 模块测试，未在真机运行** |
+| `gua/recovery.py`（`SWITCH_MODALITY`） | GUI 点击无效 → 语义动作；后台语义无效 → 前台点击（各一次），生成的动作重新过闸 | mock 故障注入 |
+| `gua/verify/receipts.py` + `agent.py` + `logger.py` | 完成凭据（`receipts.json`）、`gua run --stream` 清洗后的事件流、每个里程碑写 `checkpoint.json`，`--resume` 先在当前画面重新验证已完成子目标 | MockEnv 单元测试 |
+| `gua/env/remote.py` + `gua/sandbox/`（`daemon.py`、`local.py`、`apps/gua_form.py`）+ `sandbox/Dockerfile` | 沙箱电脑：HTTP 守护进程提供截图 / xdotool 输入 / AT-SPI 树与语义动作 / shell / 文件 / 接管与交还 / 快照与重置 / noVNC；`LocalSandbox` / `SandboxPool` 在本机起独立 DISPLAY 并行 | 本机 Xvfb + AT-SPI 端到端；**Docker 镜像未构建**；本机模式与当前用户同权限，不是安全隔离 |
+| `gua/mcp_server.py`（`gua mcp`） | MCP stdio 服务器：observe / act / verify / run_task / takeover / handback / snapshot / reset / live_view；`act` 返回规则验证结论而非 “OK”；需确认的动作默认拒绝 | stdio 子进程 + 真实 Chromium / 沙箱 |
+| `gua/eval/runner.py`（`run_suite_parallel`、`gua eval --workers N`） | 每个 worker 独立环境（remote 任务各起一台本机沙箱电脑），结果合并汇总；行内新增模态 / 回退 / 侵入 / 已验证凭据计数 | 沙箱端到端（2 workers） |
+| `gua/eval/cuabench_compat.py` / `gua/eval/osworld.py` | Cua-Bench 任务目录子集兼容层（oracle 或 gua agent 运行，判分由任务自己的 evaluate 决定）；OSWorld 形状任务 JSON 子集转换，不支持的配置 / 判分函数直接拒绝 | 沙箱端到端；合成任务，非官方任务集 |
+| `scripts/benchmark_modalities.py` | gui_only / hybrid 前台 / hybrid 后台 + mock 故障注入对比，输出 `docs/benchmarks/*.json` | 仅脚本策略，**不是模型证据** |
+
+数据流增量（在 §4 的基础上）：
+
+```
+Actor 动作 → SafetyGuard.gate(意图) → HybridExecutor
+   ├─ shell / file / api → ToolRegistry（默认关闭）→ 输出经 Scrubber → 后置条件 output_contains
+   ├─ invoke（语义）→ 遮挡检查 → 后台投递 → 侵入检测 → 重新观察 → 生效检测
+   │      └─ 无生效证据：幂等 → 前台等价动作（重新过闸）；非幂等 → background_no_effect → RecoveryPolicy
+   └─ 像素 GUI → env.execute
+→ Verifier.check_step（含动作级后置条件）→ 子目标 check_goal（含子目标级后置条件）→ receipt
+```

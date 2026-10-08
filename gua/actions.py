@@ -164,6 +164,10 @@ class Action:
     transform: Optional[Any] = field(default=None, repr=False, compare=False)
     # Executor-issued snapshot binding. Never accepted from model JSON or serialized.
     binding: Optional[dict] = field(default=None, repr=False, compare=False)
+    # v0.7: safety checks raised by the model provider for this action (e.g. OpenAI computer
+    # tool pending_safety_checks). Set only by provider adapters; the safety gate requires
+    # explicit human confirmation and never auto-acknowledges them.
+    provider_checks: list = field(default_factory=list, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.type, str) or self.type not in ACTION_TYPES:
@@ -220,6 +224,11 @@ class Action:
                 raise ActionParseError("bad_type", f"{name} must be a string", name)
         if not isinstance(self.keys, list) or not all(isinstance(k, str) and k.strip() for k in self.keys):
             raise ActionParseError("bad_type", "keys must be a list of key names", "keys")
+        if self.keys and t not in {"hotkey", "key_down", "key_up"}:
+            # v0.7: no backend executes modifiers attached to a click/scroll/drag; accepting
+            # them silently turned shift+click into a plain click that still "succeeded".
+            raise ActionParseError("bad_value", f"keys are only valid for hotkey/key_down/key_up, not {t}; "
+                                   "for a modifier click use key_down, then the click, then key_up", "keys")
         if not _is_num(self.seconds) or not 0 <= self.seconds <= MAX_WAIT_SECONDS:
             raise ActionParseError("out_of_range", f"seconds must be within 0..{MAX_WAIT_SECONDS:g}", "seconds")
         if t in POINTER_ACTIONS and self.x is None and self.element_id is None and not (self.target or "").strip():
@@ -309,7 +318,7 @@ class Action:
 
     def to_dict(self) -> dict[str, Any]:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__
-             if k not in {"coord_space", "transform", "binding"} and getattr(self, k) not in (None, [], "", 0, 0.0, False)
+             if k not in {"coord_space", "transform", "binding", "provider_checks"} and getattr(self, k) not in (None, [], "", 0, 0.0, False)
              and getattr(self, k) != {}}
         d = json.loads(json.dumps(d, default=str))
         if self.coord_space != "pixel":

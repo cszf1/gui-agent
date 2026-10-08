@@ -151,12 +151,23 @@ def tool_input_to_action(inp: dict[str, Any], sx: float = 1.0, sy: float = 1.0,
     if c is not None:
         x, y = _xy(c, transform, sx, sy)
         xy = {"x": x, "y": y}
-    mods = inp.get("text") if act in {"left_click", "right_click", "double_click", "triple_click", "middle_click"} else None
-    if act in {"left_click", "middle_click"}:
+    mods = inp.get("text") if act in {"left_click", "right_click", "double_click", "triple_click", "middle_click",
+                                      "scroll", "left_click_drag"} else None
+    if mods:
+        # v0.7: executing shift+click as a plain click silently changed the meaning (range
+        # selection became single selection). Refuse with feedback instead of guessing.
+        raise ActionParseError("unsupported", f"modifier keys {mods!r} on {act} are not supported by this "
+                               "single-action adapter; use the batch actor (actor.kind=claude_toolset) or "
+                               "key/keyboard alternatives", "text")
+    if act in {"triple_click", "middle_click"}:
+        # v0.7: these used to run as double_click / left click — a different action.
+        raise ActionParseError("unsupported", f"{act} is not supported by the executor; use double_click, "
+                               "keyboard selection (e.g. Home, shift+End) or another method", "action")
+    if act == "left_click":
         a = Action("click", **xy)
     elif act == "right_click":
         a = Action("right_click", **xy)
-    elif act in {"double_click", "triple_click"}:
+    elif act == "double_click":
         a = Action("double_click", **xy)
     elif act == "mouse_move":
         a = Action("move", **xy)
@@ -174,8 +185,11 @@ def tool_input_to_action(inp: dict[str, Any], sx: float = 1.0, sy: float = 1.0,
         a = Action("drag", x=sx0, y=sy0, x2=xy["x"], y2=xy["y"])
     elif act == "type":
         a = Action("type", text=inp.get("text", ""))
-    elif act in {"key", "hold_key"}:
+    elif act == "key":
         a = Action("hotkey", keys=_keys(inp.get("text", "")))
+    elif act == "hold_key":
+        raise ActionParseError("unsupported", "hold_key (holding a key for a duration) is not supported; "
+                               "use key for a press", "action")
     elif act == "scroll":
         a = Action("scroll", direction=inp.get("scroll_direction", "down"),
                    amount=int(inp.get("scroll_amount", 3) or 3), **xy)
@@ -185,8 +199,6 @@ def tool_input_to_action(inp: dict[str, Any], sx: float = 1.0, sy: float = 1.0,
         a = Action("wait", seconds=0.0, reason=f"claude requested {act}; re-observe")
     else:
         raise ActionParseError("unknown_action", f"unsupported computer-use action {act!r}", "action")
-    if mods:
-        a.keys = _keys(mods)  # 修饰键（例如 shift+click），记录在 keys 里供日志
     return a
 
 

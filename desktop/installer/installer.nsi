@@ -48,7 +48,9 @@ Section "GUI Agent"
   SetShellVarContext current
   SetRegView 64
   SetOutPath "$INSTDIR"
-  File /r "${PAYLOAD}\*.*"
+  ; Use the same file manifest for both directions. File /r also creates empty
+  ; dependency directories, which a files-only uninstall manifest cannot remove.
+  !include "${MANIFEST_DIR}\files_install.nsh"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\GUI Agent.lnk" "$INSTDIR\GUIAgent.exe"
   ; Remove the redundant application key left by v0.8 upgrades.

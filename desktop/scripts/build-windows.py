@@ -127,6 +127,7 @@ def main():
     owned_files, owned_dirs = payload_manifest.collect(payload)
     includes = DESKTOP / "build/installer"
     includes.mkdir(parents=True, exist_ok=True)
+    (includes / "files_install.nsh").write_text(payload_manifest.nsis_install(payload, owned_files, owned_dirs), encoding="utf-8")
     (includes / "files_uninstall.nsh").write_text(payload_manifest.nsis_uninstall(owned_files, owned_dirs), encoding="utf-8")
     files = [p for p in payload.rglob("*") if p.is_file()]
     if any(site.glob("numpy*")): raise SystemExit("NumPy must not be shipped in the desktop runtime")

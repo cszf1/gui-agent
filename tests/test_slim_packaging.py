@@ -48,7 +48,11 @@ def test_manifest_and_portable_only_include_owned_files(tmp_path):
     stage = tmp_path / "payload"
     (stage / "runtime").mkdir(parents=True)
     (stage / "runtime/python.exe").write_text("fixture")
+    (stage / "runtime/unused-empty-package").mkdir()
     files, dirs = builder.payload_manifest.collect(stage)
+    install = builder.payload_manifest.nsis_install(stage, files, dirs)
+    assert "unused-empty-package" not in install and "unused-empty-package" not in dirs
+    assert install.count('File "/oname=') == len(files)
     uninstall = builder.payload_manifest.nsis_uninstall(files, dirs)
     assert 'Delete "$INSTDIR\\runtime\\python.exe"' in uninstall and 'RMDir /r' not in uninstall
     archive = tmp_path / "portable.zip"
@@ -82,6 +86,7 @@ def test_installer_runs_ownership_and_junction_guard_before_manifest_deletion():
     assert uninstall.index('gua.app_cleanup --uninstall') < uninstall.index('files_uninstall.nsh')
     assert 'RMDir /r "$INSTDIR"' not in uninstall
     assert 'Section /o "桌面快捷方式"' in source
+    assert 'files_install.nsh' in source and 'File /r "${PAYLOAD}' not in source
     assert 'WriteRegStr HKCU "Software\\cszf1\\GUI Agent"' not in source
 
 

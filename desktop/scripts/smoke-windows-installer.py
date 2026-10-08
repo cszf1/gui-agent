@@ -169,8 +169,13 @@ def main():
             foreign.write_text("user-added file must survive", encoding="utf-8")
             subprocess.run([str(PROGRAM / "Uninstall.exe"), "/S"], check=True, timeout=120)
             backend.wait(timeout=25); backend = None
-            wait_for(lambda: not (PROGRAM / "runtime").exists() and not (PROGRAM / "Uninstall.exe").exists(),
-                     "manifest uninstall completion", 30)
+            try:
+                wait_for(lambda: not (PROGRAM / "runtime").exists() and not (PROGRAM / "Uninstall.exe").exists(),
+                         "manifest uninstall completion", 30)
+            except AssertionError:
+                print("Remaining program entries:", json.dumps(sorted(str(p.relative_to(PROGRAM))
+                      for p in PROGRAM.rglob("*")), ensure_ascii=True))
+                raise
             assert foreign.read_text(encoding="utf-8") == "user-added file must survive"
             assert list(PROGRAM.iterdir()) == [foreign], "Application files remained after manifest uninstall"
             # The only remaining file belongs to this harness, not the app.

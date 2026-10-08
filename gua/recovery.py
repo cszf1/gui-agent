@@ -69,18 +69,25 @@ class RecoveryPolicy:
         if self._switched >= 1:
             return None
         from .env.base import SEMANTIC_BY_ROLE
+        from .hybrid import IDEMPOTENT, foreground_equivalent
         err = (check.signals or {}).get("exec_error", "") or ""
         el = obs.element(action.element_id) if obs is not None and action.element_id is not None else None
         if action.type == "invoke" and ("background_no_effect" in err or check.verdict == Verdict.NO_EFFECT):
+            if action.method not in IDEMPOTENT:
+                return None
             name = el.name if el is not None else action.target
             if not name:
                 return None
+            fallback = foreground_equivalent(action, obs)
+            if fallback is None:
+                return None
             self._switched += 1
-            return RecoveryPlan(Strategy.SWITCH_MODALITY, [Action("click", target=name)],
+            fallback.element_id, fallback.binding = None, None
+            return RecoveryPlan(Strategy.SWITCH_MODALITY, [fallback],
                                 "background action showed no effect; retry once with real (foreground) input")
         if action.type == "click" and check.verdict == Verdict.NO_EFFECT and el is not None and el.enabled:
             m = SEMANTIC_BY_ROLE.get(el.role)
-            if m in {"invoke", "toggle", "select", "expand"} and el.name:
+            if m in {"select", "focus"} and el.name:
                 self._switched += 1
                 return RecoveryPlan(Strategy.SWITCH_MODALITY,
                                     [Action("invoke", method=m, target=el.name, dispatch="background")],
@@ -124,7 +131,14 @@ class RecoveryPolicy:
         if not self.enabled:
             return RecoveryPlan(Strategy.REPLAN, note="recovery disabled")
         err0 = (check.signals or {}).get("exec_error", "") or ""
-        if "stale_target" in err0 or "native_action_error" in err0 or "observation_invalidated" in err0:
+        # A missing acknowledgement does not prove non-delivery. Repeating an
+        # activation via another route can double-submit or undo a toggle.
+        if check.verdict == Verdict.NO_EFFECT or "background_no_effect" in err0:
+            from .hybrid import uncertain_activation
+            if uncertain_activation(action, obs) and (hybrid or action.type == "invoke" or "background_no_effect" in err0):
+                self.history.append(f"{check.verdict.value}->{Strategy.REPLAN.value}")
+                return RecoveryPlan(Strategy.REPLAN, note="activation outcome uncertain; do not replay")
+        if any(s in err0 for s in ("stale_target", "native_action_error", "observation_invalidated", "background_intrusion")):
             self.history.append(f"{check.verdict.value}->{Strategy.REPLAN.value}")
             return RecoveryPlan(Strategy.REPLAN, note="observe the current state before deciding; never replay the old action")
         if "blocked_by_safety" in err0:      # 拒绝是终止性的：绝不重试同一动作（fixed_retry 也一样）

@@ -92,8 +92,8 @@ class ScriptedPolicy:
             if e and "offscreen" not in e["flags"]:
                 self.trace.append(f"interrupt:{it['click']}")
                 tgt = find(els, it["click"]) or e
-                if sid in self.last:
-                    self.ptr[sid] = self.last[sid]   # 打断之后重做当前步骤
+                if failed_last and sid in self.last:
+                    self.ptr[sid] = self.last[sid]   # 只有未验证的步骤才回到当前意图（执行闸门仍防止重放）
                 return self._json({"type": "click", "element_id": tgt["id"]}, f"handle interrupt {it['click']}")
         steps = (self.subgoals[sid] if sid < len(self.subgoals) else {"steps": []}).get("steps", [])
         i = self.ptr.get(sid, 0)

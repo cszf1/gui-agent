@@ -117,6 +117,9 @@ def mock_part(repeats: int) -> list[dict]:
                                           {"background_drop": True}),
         "click-intent/normal": ("button", {"type": "click", "target": "Save"}, {}),
         "click-intent/pointer_dead": ("button", {"type": "click", "target": "Save"}, {"pointer_dead": True}),
+        "select-intent/background_drop": ("radio", {"type": "invoke", "method": "select", "target": "Save"},
+                                          {"background_drop": True}),
+        "select-click-intent/pointer_dead": ("radio", {"type": "click", "target": "Save"}, {"pointer_dead": True}),
     }
     configs = {
         "gui_only": HybridConfig(mode="gui_only", settle=0.0, modality_recovery=False),
@@ -133,7 +136,7 @@ def mock_part(repeats: int) -> list[dict]:
                     if not any(b.name == "Saved badge" for b in e.buttons):
                         e.buttons.append(MockButton("Saved badge", (300, 10, 420, 40)))
                 env = MockEnv(title="Editor", buttons=[MockButton("Save", (10, 10, 200, 40), role=role,
-                                                                  checked=False if role == "checkbox" else None,
+                                                                  checked=False if role in {"checkbox", "radio"} else None,
                                                                   on_click=mark, **flags)])
                 orig = env.wait_until_stable
                 env.wait_until_stable = lambda timeout=0.3, **kw: orig(timeout=0.3, interval=0.01)

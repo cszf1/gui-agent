@@ -19,7 +19,12 @@
         "expect_text": "Export started",
         "steps": [
           {
-            "click": "Start export"
+            "click": "Start export",
+            "expect": [{"kind": "element_state", "name": "Terms update", "role": "dialog", "exists": true}]
+          },
+          {
+            "click": "Start export",
+            "expect": [{"kind": "text_appears", "text": "Export started"}]
           }
         ]
       }

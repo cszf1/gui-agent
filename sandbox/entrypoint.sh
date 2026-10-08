@@ -7,7 +7,7 @@ for i in $(seq 1 100); do [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && break; sleep 
 eval "$(dbus-launch --sh-syntax)"
 /usr/libexec/at-spi-bus-launcher --launch-immediately &
 openbox &
-x11vnc -display "$DISPLAY" -rfbport 5900 -localhost -shared -forever -nopw -quiet &
+x11vnc -display "$DISPLAY" -rfbport 5900 -localhost -shared -forever -nopw -quiet -viewonly &
 websockify --web /usr/share/novnc "$GUA_NOVNC_PORT" 127.0.0.1:5900 &
 LV="http://127.0.0.1:${GUA_NOVNC_PORT}/vnc.html?autoconnect=1&resize=scale"
 mkdir -p /home/sandbox/work

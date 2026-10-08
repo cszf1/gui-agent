@@ -66,7 +66,9 @@ def test_web_suite_scripted_all_pass(cfg, tmp_path):
     assert s["success_rate"] == 1.0 and s["false_done_rate"] == 0.0
     # 方向 A 的各条恢复路径都真实触发过
     assert "in_progress->wait" in rows["web_delayed_report"]["recoveries"]
-    assert "blocked->dismiss" in rows["web_modal_export"]["recoveries"]
+    # The known terms dialog is an explicit intermediate postcondition;
+    # accepting it advances to export instead of replaying an unknown click.
+    assert not rows["web_modal_export"]["recoveries"]
     assert "failed->scroll" in rows["web_long_page_save"]["recoveries"]
     assert "failed->refocus" in rows["web_form_focus_steal"]["recoveries"]
     assert rows["web_form_focus_steal"]["disturbed"] and s["recovery_rate"] == 1.0

@@ -91,11 +91,11 @@ def test_hybrid_executor_verifies_background_effect_on_real_dom(env):
     r, fb = hy.run_semantic(a, obs)
     assert r.ok and fb is None and r.signals["pointer_moved"] is False
     assert "checked=True" in r.signals["background_effect"]
-    # 事件处理器吞掉 DOM click（模拟“后台投递被应用丢弃”）→ 没有生效证据 → toggle 改走前台
+    # 没有生效证据不能证明未投递；toggle 不切换前台重放。
     env.page.evaluate("sub.addEventListener('click', e => { if (!e.isTrusted) e.preventDefault(); })")
     obs, a = _bound(env, "Subscribe", "toggle", "checkbox")
     r, fb = hy.run_semantic(a, obs)
-    assert not r.ok and r.error.startswith("background_no_effect") and fb is not None and fb.type == "click"
+    assert not r.ok and r.error.startswith("background_no_effect") and fb is None
 
 
 def test_hybrid_agent_end_to_end_on_chromium(env):
@@ -118,3 +118,33 @@ def test_hybrid_agent_end_to_end_on_chromium(env):
     assert res.status == "done", res.message
     assert res.modality["modality"] == {"semantic": 2} and res.modality["background_verified"] == 2
     assert env.page.evaluate("sub.checked && document.getElementById('name').value === 'Bob'")
+
+
+@pytest.mark.parametrize("replace_target", [False, True])
+def test_idempotent_fallback_uses_fresh_identity_not_old_dom_binding(env, monkeypatch, replace_target):
+    from gua.config import build_agent, load_config
+    from gua.scripted import ScriptedPolicy
+    from pathlib import Path
+    cfg = load_config(Path(__file__).resolve().parents[1] / "configs/default.yaml",
+                      overrides={"safety": {"mode": "deny"}, "hybrid": {"settle": 0.01}})
+    agent = build_agent(cfg, env, llms=ScriptedPolicy({}).llms())
+    before, action = _bound(env, "Name", "set_value", "textbox", text="Alice")
+    execute = env.execute
+    dispatched = []
+    def dropped(a):
+        if a.type == "invoke":
+            from gua.env.base import ExecResult
+            dispatched.append(a.type)
+            if replace_target:
+                env.page.evaluate("document.getElementById('name').outerHTML='<input id=name aria-label=Name>'")
+            return ExecResult(True, route="dom_semantic:dropped")
+        return execute(a)
+    monkeypatch.setattr(env, "execute", dropped)
+    result = agent._execute_gated(action, before)
+    assert dispatched == ["invoke"]
+    if replace_target:
+        assert not result.ok and "stale_target" in result.error
+        assert env.page.evaluate("document.getElementById('name').value") == ""
+    else:
+        assert result.ok and result.route.startswith("fallback:foreground:")
+        assert env.page.evaluate("document.getElementById('name').value") == "Alice"

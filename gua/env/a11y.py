@@ -100,11 +100,19 @@ def uia_raw(ctrl: Any, offset: tuple[int, int] = (0, 0)) -> Optional[dict[str, A
     if not is_pw:                     # 密码框的值不读取、不进入日志/提示词
         try:
             vp = ctrl.GetValuePattern()
-            val = vp.Value[:80] if vp else None
+            is_pw = bool(ctrl.IsPassword)
+            val = vp.Value[:80] if vp and not is_pw else None
+            if bool(ctrl.IsPassword):
+                is_pw, val = True, None
         except Exception:
             pass
     checked = None
-    if role in {"checkbox", "radio"}:
+    if role in {"radio", "tab", "listitem"}:
+        try:
+            checked = bool(ctrl.GetSelectionItemPattern().IsSelected)
+        except Exception:
+            pass
+    if checked is None and role in {"checkbox", "radio"}:
         try:
             checked = ctrl.GetTogglePattern().ToggleState == 1
         except Exception:
@@ -340,6 +348,8 @@ def _atspi_attrs(node: dict, is_pw: bool) -> dict:
     a: dict = {"password": "true"} if is_pw else {}
     if node.get("path"):
         a["atspi_path"] = str(node["path"])
+        if node.get("identity"):
+            a["atspi_identity"] = str(node["identity"])
         if not is_pw:
             a["atspi_name"] = str(node.get("name") or "")
     if node.get("actions"):

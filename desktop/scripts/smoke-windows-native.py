@@ -38,15 +38,19 @@ $button = New-Object System.Windows.Forms.Button
 $button.Text = 'Continue'
 $button.Location = New-Object System.Drawing.Point(30, 180)
 $button.Width = 140
+$status = New-Object System.Windows.Forms.Label
+$status.Location = New-Object System.Drawing.Point(250, 180)
+$status.Width = 180
+$status.Text = 'Clicks:0'
 function Record-State {
   @{name=$name.Text; checked=$check.Checked; selected=$radio.Checked; clicks=$script:clicks} |
     ConvertTo-Json -Compress | Set-Content -Path $StateFile -Encoding UTF8
 }
-$button.Add_Click({ $script:clicks++; Record-State })
+$button.Add_Click({ $script:clicks++; $status.Text = 'Clicks:' + $script:clicks; Record-State })
 $name.Add_TextChanged({ Record-State })
 $check.Add_CheckedChanged({ Record-State })
 $radio.Add_CheckedChanged({ Record-State })
-$form.Controls.AddRange(@($name, $check, $radio, $button))
+$form.Controls.AddRange(@($name, $check, $radio, $button, $status))
 $form.Add_Shown({
   $form.Activate(); $name.Focus()
   [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(($form.Left + 250), ($form.Top + 250))
@@ -133,8 +137,31 @@ def main():
                 routes.append(result.route)
             actual = wait_for(lambda row: row.get("clicks") == 1 and row.get("checked") and row.get("selected"))
             assert actual["name"] == text and actual["clicks"] == 1
+            # v0.6 explicit background patterns: app-owned outcomes plus exact
+            # pointer/foreground invariants. No substitute mocked controls.
+            background_routes = []
+            for name, method, payload, predicate in [
+                ("Name", "set_value", "Background 测试用户", lambda row: row.get("name") == "Background 测试用户"),
+                ("Subscribe", "toggle", None, lambda row: row.get("checked") is False),
+                ("Pro", "select", None, lambda row: row.get("selected") is True),
+                ("Continue", "invoke", None, lambda row: row.get("clicks") == 2),
+            ]:
+                obs = agent._observe()
+                action, source = agent._resolve(Action("invoke", method=method, target=name, text=payload,
+                                                       dispatch="background", expect=[{"kind": "text_appears", "text": "Clicks:2"}]
+                                                       if method == "invoke" else []), obs)
+                assert source != "grounding_failed", (name, method)
+                pointer, foreground = env.pointer_position(), env.foreground_token()
+                assert pointer is not None and foreground, "Cannot inspect native input invariants"
+                result = agent._execute_gated(action, obs)
+                assert result.ok and result.route == "uia_semantic:" + method, result
+                wait_for(predicate)
+                assert env.pointer_position() == pointer, ("Background pointer intrusion", method)
+                assert env.foreground_token() == foreground, ("Background foreground intrusion", method)
+                background_routes.append(result.route)
             print("Real Windows WinForms/UIA outcomes verified: native ASCII + Chinese replacement, keyboard fallback, toggle, select, invoke.")
-            print(json.dumps({"input_routes": input_routes, "routes": routes, "outcome": actual}, ensure_ascii=True))
+            print(json.dumps({"input_routes": input_routes, "routes": routes, "background_routes": background_routes,
+                              "outcome": wait_for(lambda row: row.get("clicks") == 2)}, ensure_ascii=True))
         finally:
             if env is not None:
                 env.close()

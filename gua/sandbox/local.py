@@ -80,9 +80,9 @@ class LocalSandbox:
 
     def start(self, timeout: float = 20.0) -> "LocalSandbox":
         req = requirements()
-        missing = [k for k in ("Xvfb", "xdotool") if not req[k]]
+        missing = [k for k in ("Xvfb", "xdotool", "openbox") if not req[k]]
         if missing:
-            raise RuntimeError(f"local sandbox needs {', '.join(missing)} (apt install xvfb xdotool)")
+            raise RuntimeError(f"local sandbox needs {', '.join(missing)} (apt install xvfb xdotool openbox)")
         self.display = self.display if self.display is not None else free_display()
         self.port = self.port or free_port()
         self._tmp = tempfile.mkdtemp(prefix="gua-sandbox-")
@@ -110,12 +110,20 @@ class LocalSandbox:
             if launcher:
                 self._spawn([launcher, "--launch-immediately"])
         if shutil.which("openbox"):
-            self._spawn(["openbox"])
+            wm = self._spawn(["openbox"])
+            while True:
+                desktop = subprocess.run(["xdotool", "get_desktop"], env=self.env, capture_output=True, timeout=2)
+                if desktop.returncode == 0:
+                    break
+                if wm.poll() is not None or time.monotonic() > deadline:
+                    self.stop()
+                    raise RuntimeError("openbox did not start; check installed themes and XDG configuration")
+                time.sleep(0.05)
         if self.liveview and shutil.which("x11vnc") and shutil.which("websockify") and Path("/usr/share/novnc").exists():
             vnc, ws = free_port(), free_port()
             self._spawn(["x11vnc", "-display", disp, "-rfbport", str(vnc), "-localhost", "-shared", "-forever",
-                         "-nopw", "-quiet"])
-            self._spawn(["websockify", "--web", "/usr/share/novnc", str(ws), f"127.0.0.1:{vnc}"])
+                         "-nopw", "-quiet", "-viewonly"])
+            self._spawn(["websockify", "--web", "/usr/share/novnc", f"127.0.0.1:{ws}", f"127.0.0.1:{vnc}"])
             base = f"http://127.0.0.1:{ws}/vnc.html?autoconnect=1&resize=scale"
             self.liveview_url, self.takeover_url = base + "&view_only=1", base
         bindir = Path(self._tmp) / "bin"

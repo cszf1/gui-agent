@@ -148,6 +148,7 @@ class Session:
         after, stable = self.agent._settle()
         check = self.agent.verifier.check_step(before, after, a, res, stable, "", task_window="",
                                                action_desc=view_s)
+        self.agent._remember_unconfirmed(a, before, res, check)
         self.last = after
         sig = check.signals or {}
         out = {"executed": res.ok, "verdict": check.verdict.value, "level": check.level,
@@ -197,6 +198,10 @@ class Session:
             verdict = "success"
         else:
             verdict = next(v for v in verdicts if v != "success")
+        unsettled = self.agent.verifier._not_settled(obs, stable, "mcp-L1")
+        if unsettled is not None:
+            verdict = "uncertain"
+            evidence.append(unsettled.evidence)
         receipt = make_receipt("mcp_verify", goal or expect_text or "postconditions",
                                "verified_done" if verdict == "success" else verdict, level,
                                self.agent._scrub("; ".join(evidence)), obs, [],
@@ -225,11 +230,24 @@ class Session:
         if max_steps:
             self.cfg.setdefault("agent", {})["max_steps"] = int(max_steps)
         log = TrajectoryLogger(self.cfg.get("runs_dir", "runs"), save_images=False)
+        # Privacy, rejected intents and held keys belong to the connection,
+        # including across run_task / act calls on the same computer.
+        log.scrubber = self.agent.scrubber
         if notify:
             log.subscribe(notify)
         agent = build_agent(self.cfg, self.env, log, llms=llms, ask_fn=lambda q: None)
-        res = agent.run(task)
-        log.close(report=False)
+        agent.guard.denied = self.agent.guard.denied
+        agent.guard.uncertain = self.agent.guard.uncertain
+        agent.guard.held = self.agent.guard.held
+        agent.guard.tools = self.agent.guard.tools
+        agent.hybrid.tools = self.agent.hybrid.tools
+        if hasattr(agent.actor, "extra_docs") and agent.guard.tools is not None:
+            agent.actor.extra_docs = agent.guard.tools.prompt_docs()
+        try:
+            res = agent.run(task)
+        finally:
+            log.close(report=False)
+            self.last = None
         out = {"status": res.status, "claimed_done": res.claimed_done, "steps": res.steps,
                "message": res.message, "receipts": res.receipts, "modality": res.modality,
                "trajectory": str(log.dir)}

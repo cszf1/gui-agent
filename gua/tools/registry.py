@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..env.base import ExecResult
+from ..sandbox.process import run_bounded
 
 SHELL_METACHARS = set("|;&`$<>\n\r")
 
@@ -198,23 +199,9 @@ class ToolRegistry:
         env = {k: os.environ[k] for k in self.shell.env_passthrough if k in os.environ}
         env["HOME"] = str(wd)
         argv = list(self.shell.sandbox_prefix) + list(a.command)
-        kw: dict = {}
-        if os.name == "posix":
-            def limits():  # pragma: no cover - runs in the child
-                import resource
-                for lim, val in ((resource.RLIMIT_CPU, int(self.shell.timeout) + 1),
-                                 (resource.RLIMIT_FSIZE, 50 * 1024 * 1024),
-                                 (resource.RLIMIT_AS, 2 * 1024 * 1024 * 1024)):
-                    try:
-                        resource.setrlimit(lim, (val, val))
-                    except (ValueError, OSError):
-                        pass
-                os.setsid()
-            kw["preexec_fn"] = limits
         try:
-            p = subprocess.run(argv, cwd=str(wd), env=env, capture_output=True, text=True,
-                               timeout=self.shell.timeout, stdin=subprocess.DEVNULL, shell=False,
-                               encoding="utf-8", errors="replace", **kw)
+            p = run_bounded(argv, cwd=str(wd), env=env, timeout=self.shell.timeout,
+                            max_output=self.shell.max_output, limits=True)
         except subprocess.TimeoutExpired:
             return ExecResult(False, f"tool_error: timeout after {self.shell.timeout}s", t0, time.time(),
                               route="shell")
@@ -238,7 +225,8 @@ class ToolRegistry:
         if m == "read":
             if not full.is_file():
                 return ExecResult(False, "tool_error: file not found", t0, time.time(), route="file")
-            data = full.read_bytes()[: self.files.max_bytes]
+            with full.open("rb") as stream:
+                data = stream.read(self.files.max_bytes)
             return ExecResult(True, "", t0, time.time(), output=data.decode("utf-8", errors="replace"), route="file")
         text = a.text or ""
         if len(text.encode("utf-8")) > self.files.max_bytes:

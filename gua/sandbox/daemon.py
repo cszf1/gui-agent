@@ -28,6 +28,7 @@ Cua Sandbox / Cua Driver（屏幕 + 无障碍树 + 动作层、后台语义动�
 from __future__ import annotations
 
 import argparse
+import base64
 import hmac
 import io
 import json
@@ -42,6 +43,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+if __package__:
+    from .process import run_bounded
+else:
+    from process import run_bounded
 
 VERSION = "0.6.0"
 
@@ -74,10 +80,13 @@ class State:
         self.apps = set(args.apps or [])
         self.liveview = args.liveview or ""
         self.takeover_url = args.takeover_url or ""
+        self.vnc_enabled = bool(self.liveview)
         self.takeover = False
         self.takeover_since = 0.0
         self.epoch = 0
         self.counter = 0
+        self.nodes: dict[str, object] = {}
+        self.identities: dict[object, str] = {}
         self.procs: list[tuple[list[str], subprocess.Popen]] = []
         self.lock = threading.RLock()
         self.env = dict(os.environ, DISPLAY=self.display)
@@ -154,6 +163,10 @@ def _atspi():
 def _node(acc, pyatspi, path: str, depth: int, budget: list) -> dict:
     budget[0] -= 1
     d: dict = {"role": acc.getRoleName(), "name": acc.name or "", "path": path}
+    # Bind the accessible object, not a tree index that can be reused after
+    # replacement. Keep the handle only for the current observation.
+    d["identity"] = S.identities.setdefault(acc, secrets.token_hex(12))
+    S.nodes[path] = acc
     try:
         d["states"] = [pyatspi.stateToString(s) for s in acc.getState().getStates()]
     except Exception:  # noqa: BLE001
@@ -211,11 +224,9 @@ def resolve(path: str):
     pyatspi = _atspi()
     if pyatspi is None:
         raise LookupError("AT-SPI unavailable")
-    acc = pyatspi.Registry.getDesktop(0)
-    for part in path.split("/"):
-        acc = acc.getChildAtIndex(int(part))
-        if acc is None:
-            raise LookupError("node vanished")
+    acc = S.nodes.get(path)
+    if acc is None or acc.getState().contains(pyatspi.STATE_DEFUNCT):
+        raise LookupError("observed node vanished")
     return acc, pyatspi
 
 
@@ -257,13 +268,17 @@ def semantic(body: dict) -> dict:
             except Exception:  # noqa: BLE001
                 return {"ok": False, "error": "background_unavailable: no editable text interface", "route": route}
             text = str(body.get("text") or "")
+            if acc.getRoleName() == "password text" or acc.getState().contains(pyatspi.STATE_DEFUNCT):
+                return {"ok": False, "error": "stale_target: security or identity changed", "route": route}
             if not et.setTextContents(text):
                 return {"ok": False, "error": "native_action_error: value not acknowledged", "route": route}
             try:
+                if acc.getRoleName() == "password text":
+                    return {"ok": False, "error": "native_action_error: security changed; no value read", "route": route}
                 t = acc.queryText()
                 now = t.getText(0, -1)
             except Exception:  # noqa: BLE001
-                now = text
+                return {"ok": False, "error": "native_action_error: cannot verify actual value", "route": route}
             if now != text:
                 return {"ok": False, "error": "native_action_error: value not verified; observe again",
                         "route": route}
@@ -301,6 +316,23 @@ def do_input(a: dict) -> dict:
     t = a.get("type")
     x, y = a.get("x"), a.get("y")
     xy = [str(int(x)), str(int(y))] if x is not None and y is not None else None
+    if a.get("target_path"):
+        try:
+            target, pyatspi = resolve(str(a["target_path"]))
+            state = target.getState()
+            extents = target.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            if (target.getRoleName() != a.get("target_role")
+                    or active_window()[0] != a.get("target_window")
+                    or (target.getRoleName() != "password text" and (target.name or "") != a.get("target_name"))
+                    or (target.getRoleName() == "password text") != bool(a.get("target_password"))
+                    or not state.contains(pyatspi.STATE_ENABLED)
+                    or a.get("target_checked") is not None
+                    and state.contains(pyatspi.STATE_CHECKED) != a["target_checked"]
+                    or x is None or y is None
+                    or not (extents.x <= x < extents.x + extents.width and extents.y <= y < extents.y + extents.height)):
+                return {"ok": False, "error": "stale_target: pointer target changed before input"}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"stale_target: pointer target unavailable ({type(exc).__name__})"}
     r = None
     if t in {"click", "double_click", "right_click", "move", "long_press"}:
         if xy is None:
@@ -324,13 +356,28 @@ def do_input(a: dict) -> dict:
         r = xdo("click", "--repeat", str(max(1, int(a.get("amount") or 3))), "--delay", "30", btn)
     elif t == "type":
         text = str(a.get("text") or "")
-        if a.get("clear"):
-            xdo("key", "ctrl+a")
-            xdo("key", "BackSpace")
-        if text:
-            r = xdo("type", "--delay", "8", "--", text, timeout=60)
-        if a.get("submit"):
-            r = xdo("key", "Return")
+        try:
+            acc, pyatspi = resolve(str(a.get("focus_path") or ""))
+            def checked_input(*args):
+                state = acc.getState()
+                if (not state.contains(pyatspi.STATE_FOCUSED) or state.contains(pyatspi.STATE_DEFUNCT)
+                        or active_window()[0] != a.get("focus_window")
+                        or acc.getRoleName() != a.get("focus_role")
+                        or (acc.getRoleName() == "password text") != bool(a.get("focus_password"))):
+                    raise ValueError("keyboard focus, window or security changed; stop typing")
+                outcome = xdo(*args)
+                if outcome.returncode:
+                    raise ValueError("keyboard input failed; do not replay")
+                return outcome
+            if a.get("clear"):
+                checked_input("key", "ctrl+a")
+                checked_input("key", "BackSpace")
+            for char in text:
+                r = checked_input("type", "--delay", "0", "--", char)
+            if a.get("submit"):
+                r = checked_input("key", "Return")
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"stale_target: guarded input stopped ({type(exc).__name__})", "route": "xdotool"}
         if r is None:
             return {"ok": True, "route": "xdotool"}
     elif t in {"hotkey", "key_down", "key_up"}:
@@ -411,7 +458,9 @@ def files(body: dict) -> dict:
     if m == "read":
         if not full.is_file():
             return {"ok": False, "error": "tool_error: file not found", "route": "file"}
-        return {"ok": True, "output": full.read_bytes()[:200_000].decode("utf-8", "replace"), "route": "file"}
+        with full.open("rb") as stream:
+            data = stream.read(200_000)
+        return {"ok": True, "output": data.decode("utf-8", "replace"), "route": "file"}
     if m in {"write", "append"}:
         full.parent.mkdir(parents=True, exist_ok=True)
         with open(full, "a" if m == "append" else "w", encoding="utf-8") as f:
@@ -430,8 +479,7 @@ def shell(body: dict) -> dict:
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(S.workdir), "LANG": "C.UTF-8",
            "DISPLAY": S.display}
     try:
-        p = subprocess.run(argv, cwd=str(S.workdir), env=env, capture_output=True, text=True, timeout=timeout,
-                           stdin=subprocess.DEVNULL, errors="replace")
+        p = run_bounded(argv, cwd=str(S.workdir), env=env, timeout=timeout, max_output=8000, limits=True)
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f"tool_error: timeout after {timeout}s", "route": "shell"}
     except FileNotFoundError:
@@ -440,6 +488,22 @@ def shell(body: dict) -> dict:
     if p.returncode:
         return {"ok": False, "error": f"tool_error: exit code {p.returncode}", "output": out, "route": "shell"}
     return {"ok": True, "output": out, "route": "shell"}
+
+
+def vnc_control(enabled: bool) -> bool:
+    """Enforce view-only at the VNC server; a URL flag is only UI state."""
+    if not getattr(S, "vnc_enabled", False):
+        return True
+    try:
+        # -remote alone only posts a request. Query on the same invocation
+        # waits for server processing, then verifies the effective mode.
+        result = subprocess.run(["x11vnc", "-display", S.display, "-remote",
+                                 "noviewonly" if enabled else "viewonly", "-query", "viewonly"],
+                                env=S.env, capture_output=True, text=True, timeout=5)
+        expected = "ans=viewonly:" + ("0" if enabled else "1")
+        return result.returncode == 0 and expected in result.stdout.splitlines()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def snapshot(name: str) -> dict:
@@ -504,7 +568,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 2_000_000:
+        if n < 0 or n > 2_000_000:
             raise ValueError("request too large")
         raw = self.rfile.read(n) if n else b"{}"
         obj = json.loads(raw.decode("utf-8") or "{}")
@@ -522,13 +586,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stale(self, body: dict) -> bool:
         snap = str(body.get("snapshot_id") or "")
-        if snap and snap.split(":", 1)[0] != str(S.epoch):
+        if snap and snap != f"{S.epoch}:{S.counter}":
             self._send(200, {"ok": False, "error": "stale_target: sandbox was taken over or reset since the "
                                                    "observation; observe again"})
             return True
         return False
 
     def do_GET(self):  # noqa: N802
+        # Takeover is acknowledged only after an in-flight observation/action
+        # has completed. No screenshot can escape after that acknowledgement.
+        with S.lock:
+            return self._get_locked()
+
+    def _get_locked(self):
         u = urlparse(self.path)
         if u.path == "/health":
             return self._send(200, {"ok": True, "version": VERSION, "display": S.display, "epoch": S.epoch,
@@ -550,43 +620,60 @@ class Handler(BaseHTTPRequestHandler):
             wid, title, proc = active_window()
             tree = None
             if q.get("elements", ["1"])[0] != "0":
+                S.nodes = {}
                 try:
                     tree = atspi_tree(title)
+                    S.identities = {acc: S.identities[acc] for acc in S.nodes.values()}
                 except Exception as e:  # noqa: BLE001
                     tree = {"error": f"{type(e).__name__}"}
             with S.lock:
                 S.counter += 1
                 snap = f"{S.epoch}:{S.counter}"
-            return self._send(200, {"ok": True, "active_window": title, "active_process": proc, "foreground": wid,
+            payload = {"ok": True, "active_window": title, "active_process": proc, "foreground": wid,
                                     "windows": window_titles(), "pointer": list(pointer()), "tree": tree,
-                                    "snapshot_id": snap, "epoch": S.epoch})
+                                    "snapshot_id": snap, "epoch": S.epoch}
+            if q.get("image", ["0"])[0] == "1":
+                payload["image"] = base64.b64encode(screenshot_png()).decode("ascii")
+            return self._send(200, payload)
         return self._send(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):  # noqa: N802
         if not self._auth():
             return None
-        u = urlparse(self.path)
         try:
+            self.connection.settimeout(5)
             body = self._body()
         except Exception as e:  # noqa: BLE001
             return self._send(400, {"ok": False, "error": f"bad request: {e}"})
+        with S.lock:
+            return self._post_locked(body)
+
+    def _post_locked(self, body):
+        u = urlparse(self.path)
         if u.path == "/takeover":
             with S.lock:
                 S.takeover, S.takeover_since = True, time.time()
+                if not vnc_control(True):
+                    return self._send(503, {"ok": False, "error": "paused_for_human: unable to enable VNC control"})
             return self._send(200, {"ok": True, "takeover": S.takeover_url, "liveview": S.liveview})
         if u.path == "/handback":
             with S.lock:
+                if not vnc_control(False):
+                    S.takeover = True
+                    return self._send(503, {"ok": False, "error": "paused_for_human: unable to revoke VNC control"})
                 was = S.takeover
                 S.takeover = False
                 S.epoch += 1
+                S.nodes = {}
+                S.identities = {}
             return self._send(200, {"ok": True, "was_taken_over": was, "epoch": S.epoch})
+        if self._paused():
+            return None
         if u.path in {"/snapshot", "/reset"}:
             fn = snapshot if u.path == "/snapshot" else reset
             return self._send(200, fn(str(body.get("name") or "default")))
         if u.path == "/launch":
             return self._send(200, launch(list(body.get("argv") or [])))
-        if self._paused():
-            return None
         if u.path == "/input":
             if self._stale(body):
                 return None
@@ -596,8 +683,12 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             return self._send(200, semantic(body))
         if u.path == "/shell":
+            if self._stale(body):
+                return None
             return self._send(200, shell(body))
         if u.path == "/files":
+            if self._stale(body):
+                return None
             return self._send(200, files(body))
         return self._send(404, {"ok": False, "error": "not found"})
 

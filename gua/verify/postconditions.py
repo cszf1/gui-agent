@@ -43,6 +43,12 @@ def validate_postcondition(pc: Any) -> Optional[str]:
         if not isinstance(pc.get("text"), str) or not pc["text"].strip():
             return f"{k} needs non-empty text"
     elif k == "element_state":
+        identity = pc.get("target_identity")
+        if identity is not None and (not isinstance(identity, dict) or not identity
+                                    or not set(identity) <= {"document_id", "dom_id", "uia_runtime", "atspi_identity"}
+                                    or not all(isinstance(v, (str, int)) and not isinstance(v, bool)
+                                               for v in identity.values())):
+            return "target_identity must contain stable node attributes"
         if not isinstance(pc.get("name"), str) or not pc["name"].strip():
             return "element_state needs name"
         if not (set(pc) & _STATE_KEYS):
@@ -71,14 +77,21 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip().lower()
 
 
-def _find(obs, name: str, role: Optional[str] = None):
+def _matches(obs, name: str, role: Optional[str] = None, identity: Optional[dict] = None):
     n = _norm(name)
     pool = [e for e in (getattr(obs, "elements", None) or []) if role is None or e.role == role]
+    if identity:
+        pool = [e for e in pool if all(e.attrs.get(key) == value for key, value in identity.items())]
     exact = [e for e in pool if _norm(e.name) == n]
     if exact:
-        return exact[0]
+        return exact
     part = [e for e in pool if n and n in _norm(e.name)]
-    return part[0] if part else None
+    return part
+
+
+def _find(obs, name: str, role: Optional[str] = None):
+    matches = _matches(obs, name, role)
+    return matches[0] if len(matches) == 1 else None
 
 
 @dataclass
@@ -118,8 +131,8 @@ def _safe_spec(pc: dict, before, after) -> dict:
     d = dict(pc)
     if pc.get("kind") == "element_state":
         for obs in (before, after):
-            e = _find(obs, pc.get("name", ""), pc.get("role")) if obs is not None else None
-            if e is not None and getattr(e, "is_password", False):
+            matches = _matches(obs, pc.get("name", ""), pc.get("role")) if obs is not None else []
+            if any(getattr(e, "is_password", False) for e in matches):
                 d.pop("value", None)
                 d.pop("value_contains", None)
     return d
@@ -175,7 +188,10 @@ def evaluate_one(pc: dict, before, after, use_a11y: bool = True, output: Optiona
             return PCResult(k, "unknown", "no URL on this platform", spec)
         return PCResult(k, "pass" if c in after.url.lower() else "fail", f"url={after.url!r}", spec)
     if k == "element_state":
-        e = _find(after, pc["name"], pc.get("role"))
+        matches = _matches(after, pc["name"], pc.get("role"), pc.get("target_identity"))
+        if len(matches) > 1:
+            return PCResult(k, "unknown", "multiple matching controls; target is ambiguous", spec)
+        e = matches[0] if matches else None
         if "exists" in pc:
             if pc["exists"] is False:
                 return PCResult(k, "pass" if e is None else "fail",
@@ -222,14 +238,19 @@ def implied_postconditions(action, before) -> list[dict]:
     if el is None:
         return []
     m = action.method
+    identity = {key: el.attrs[key] for key in ("document_id", "dom_id", "uia_runtime", "atspi_identity")
+                if key in el.attrs}
+    common = {"kind": "element_state", "name": el.name, "role": el.role}
+    if identity:
+        common["target_identity"] = identity
     if m == "toggle" and el.checked is not None:
-        return [{"kind": "element_state", "name": el.name, "role": el.role, "checked": not el.checked}]
+        return [dict(common, checked=not el.checked)]
     if m == "select" and el.role in {"radio", "checkbox", "tab", "listitem"} and el.checked is not None:
-        return [{"kind": "element_state", "name": el.name, "role": el.role, "checked": True}]
+        return [dict(common, checked=True)]
     if m == "set_value" and not el.is_password and action.text is not None:
-        return [{"kind": "element_state", "name": el.name, "role": el.role, "value": action.text}]
+        return [dict(common, value=action.text)]
     if m == "focus":
-        return [{"kind": "element_state", "name": el.name, "role": el.role, "focused": True}]
+        return [dict(common, focused=True)]
     return []
 
 

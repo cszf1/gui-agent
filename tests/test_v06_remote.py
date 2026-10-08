@@ -16,7 +16,7 @@ if not sys.platform.startswith("linux"):
 from gua.sandbox.local import LocalSandbox, SandboxPool, requirements  # noqa: E402
 
 _req = requirements()
-if not all(_req[k] for k in ("Xvfb", "xdotool", "dbus-launch", "pyatspi", "gtk")):
+if not all(_req[k] for k in ("Xvfb", "xdotool", "openbox", "dbus-launch", "pyatspi", "gtk")):
     pytest.skip(f"sandbox prerequisites missing: {_req}", allow_module_level=True)
 
 pytestmark = pytest.mark.sandbox

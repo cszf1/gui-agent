@@ -185,8 +185,14 @@ def semantic_control(bound: ObservedControl, method: str, text: str | None = Non
             if pattern.IsReadOnly:
                 return ExecResult(False, "background_unavailable: value is read-only", started, time.time(),
                                   route=route)
+            if (runtime_id(ctrl) != bound.runtime or not ctrl.IsEnabled or bool(ctrl.IsPassword)):
+                return ExecResult(False, "stale_target: value target security or identity changed", started,
+                                  time.time(), route=route)
             attempted = True
             ack = pattern.SetValue(text or "", waitTime=0)
+            if bool(ctrl.IsPassword) or runtime_id(ctrl) != bound.runtime:
+                return ExecResult(False, "native_action_error: value target security changed; do not replay",
+                                  started, time.time(), route=route)
             if ack is False or pattern.Value != (text or ""):
                 return ExecResult(False, "native_action_error: value not verified; observe again, do not replay",
                                   started, time.time(), route=route)

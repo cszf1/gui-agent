@@ -32,3 +32,24 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: web-demo-runs, path: runs/}
+  sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -e ".[dev]"
+      - name: Install local X11 and AT-SPI prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xdotool openbox dbus-x11 at-spi2-core python3-gi gir1.2-gtk-3.0 python3-pyatspi python3-pil imagemagick
+      - name: Real local sandbox, adapters and parallel workers
+        run: python -m pytest -q tests/test_v06_remote.py tests/test_v06_eval_adapters.py
+        env: {NO_PROXY: '127.0.0.1,localhost'}
+      - name: Build disposable sandbox image
+        run: docker build -t gua-sandbox-ci -f sandbox/Dockerfile .
+        timeout-minutes: 10
+      - name: Real container and server-enforced VNC takeover
+        run: python scripts/smoke-sandbox.py --image gua-sandbox-ci
+        timeout-minutes: 3
+        env: {NO_PROXY: '127.0.0.1,localhost'}

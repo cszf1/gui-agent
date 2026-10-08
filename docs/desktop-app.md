@@ -1,7 +1,8 @@
 # 本机桌面 Agent 设计
 
 目标是一个 Windows 优先的桌面 App：用户输入自然语言，App 观察和操作本机应用或独立浏览器，并验证结果。
-Muse、Grok Bot 用于参考电脑操控体验；产品不提供云电脑或云端运行服务。
+Meta Muse、Grok Bot 用于参考公开的执行设计和电脑操控体验；产品不提供云电脑或云端运行服务。
+v0.6 的 RemoteEnv、Linux 沙盒和 Docker 镜像是可选的开发、评测与 MCP 工具，不改变本机桌面 App 的产品方向。
 
 ## 语言与技术栈
 
@@ -51,7 +52,7 @@ API Key 在 Windows 使用操作系统保护加密；截图、敏感输入与模
 - [OpenAI Codex Computer Use](https://developers.openai.com/codex/app/computer-use)：本机应用操作、用户授权与接管体验。
 - [Anthropic Computer Use 工具](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)：模型提出截图/点击/输入请求，由应用在自己控制的电脑环境执行。桌面 MVP 使用普通 Messages + JSON 动作，没有宣称实现其全部原生 computer-use toolset。
 - [Claude 电脑操控的实践](https://claude.com/resources/articles/best-practices-for-computer-and-browser-use-with-claude)：观察、坐标空间、工具选择与执行反馈。
-- [Meta Muse 的安全设计](https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse)：长期任务的可观察活动、用户介入、凭据与执行环境的分工。
+- [Meta Muse 的公开安全设计](https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse)（2026-09-08）：隔离的 Linux 执行环境、外部 Sentinel 权限与网络控制、凭据代理和权限分离。2026-10-08 已核对该官方来源；这里只作为设计参考，没有接入 Muse 实现，也不据此宣称具有同等隔离能力。
 - [Grok Bot 的电脑与应用](https://docs.x.ai/grok-bot/computer-and-apps)：持续会话、电脑可见性和人工操作的协作方式。
 - [Electron 安全指南](https://www.electronjs.org/docs/latest/tutorial/security/) 与 [safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage/)：renderer 隔离和系统安全存储。
 

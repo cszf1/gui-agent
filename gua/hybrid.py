@@ -10,9 +10,9 @@
    - 侵入检测：指针是否移动、前台窗口是否变化（`signals.pointer_moved` / `signals.focus_stolen`）；
    - 生效检测：重新观察，按语义方法自带的后置条件（toggle→勾选翻转、set_value→值相等、select→选中、
      focus→获得焦点）或“无障碍树差分 / 像素差非空”判断；
-   - 没有生效证据时：**幂等**方法（set_value / select / focus / expand / collapse / scroll_into_view）可以自动
-     改走前台；toggle 在短暂等待复查仍未翻转时才改走前台；**非幂等的 invoke 绝不自动重放**（可能延迟生效，
-     重放会执行两次），返回 `background_no_effect` 交给恢复策略显式地换模态并重新验证。
+   - 没有生效证据时：存在等价前台路径的**幂等**方法（set_value / select / focus）可以自动
+     改走前台；expand / collapse 不用点击模拟。**toggle / invoke 等非幂等动作投递后结果不明时绝不重放**（可能延迟生效，
+     重放会执行两次），返回 `background_no_effect`，重新观察或等待人工处理。
 4. `mode=gui_only`（消融基线）时，语义动作直接改写成前台等价动作执行；路由与模态都写进日志。
 """
 from __future__ import annotations
@@ -26,6 +26,20 @@ from .env.base import Env, ExecResult, Observation
 from .verify.postconditions import a11y_diff, diff_is_empty, evaluate, implied_postconditions
 
 IDEMPOTENT = {"set_value", "select", "focus", "expand", "collapse", "scroll_into_view"}
+
+
+def uncertain_activation(a: Action, obs: Optional[Observation]) -> bool:
+    """Whether an unacknowledged effect must be protected against replay."""
+    if a.type == "invoke":
+        return a.method not in IDEMPOTENT
+    if a.type == "click":
+        el = obs.element(a.element_id) if obs is not None and a.element_id is not None else None
+        return el is None or el.role not in {"textbox", "combobox", "radio", "tab", "listitem"}
+    if a.type in {"hotkey", "key_down"}:
+        from .keys import ACTIVATION_KEYS, canonical_set
+        return bool(canonical_set(a.keys) & ACTIVATION_KEYS)
+    return (a.type in {"double_click", "right_click", "long_press", "drag"} or bool(a.submit)
+            or a.type == "type" and any(c in (a.text or "") for c in "\r\n"))
 
 
 @dataclass
@@ -51,7 +65,7 @@ def foreground_equivalent(a: Action, obs: Optional[Observation]) -> Optional[Act
     """语义动作的前台（真实输入）等价动作；没有等价动作返回 None。"""
     el = obs.element(a.element_id) if obs is not None and a.element_id is not None else None
     m = a.method
-    if m in {"invoke", "toggle", "select", "expand", "collapse", "focus"}:
+    if m in {"invoke", "toggle", "select", "focus"}:
         if el is None and not a.target:
             return None
         x, y = (el.center if el is not None else (None, None))
@@ -135,18 +149,19 @@ class HybridExecutor:
         ptr1, fg1 = self.env.pointer_position(), self.env.foreground_token()
         moved = ptr0 is not None and ptr1 is not None and tuple(ptr0) != tuple(ptr1)
         stolen = bool(fg0) and bool(fg1) and fg0 != fg1
-        r.signals.update({"background": True, "pointer_moved": moved, "focus_stolen": stolen})
+        r.signals.update({"background": not (moved or stolen), "pointer_moved": moved, "focus_stolen": stolen})
         if moved or stolen:
             self.stats["intrusions"] += 1
+            r = ExecResult(False, "background_intrusion: pointer or foreground changed; do not replay",
+                           r.started, time.time(), route=r.route, signals=r.signals)
+            self._count(a, r)
+            return r, None
         if self.cfg.verify_background and self.observe is not None and obs is not None:
             ok, evidence = self._effect(a, obs)
-            if ok is None and a.method == "toggle":
-                time.sleep(self.cfg.settle * 2)      # toggle 非幂等：复查一次再决定
-                ok, evidence = self._effect(a, obs)
             r.signals["background_effect"] = evidence
-            if ok is False or (ok is None and a.method in IDEMPOTENT):
+            if ok is not True:
                 self.stats["background_no_effect"] += 1
-                if (a.method in IDEMPOTENT or a.method == "toggle") and dispatch == "auto" \
+                if a.method in IDEMPOTENT and dispatch == "auto" \
                         and self.cfg.fallback_to_foreground and fg is not None:
                     r2 = ExecResult(False, f"background_no_effect: {evidence}", r.started, time.time(),
                                     route=r.route, signals=dict(r.signals, fallback_reason="no observable effect"))
@@ -166,13 +181,12 @@ class HybridExecutor:
             after = self.observe()
         except Exception as e:  # noqa: BLE001
             return None, f"re-observe failed ({type(e).__name__})"
-        preds = implied_postconditions(a, before)
+        preds = list(a.expect) + implied_postconditions(a, before)
         if preds:
             rep = evaluate(preds, before, after)
             if rep.verdict == "success":
                 return True, rep.evidence()
-            if rep.verdict == "failed":
-                return False, rep.evidence()
+            return (False if rep.verdict == "failed" else None), rep.evidence()
         d = a11y_diff(before, after)
         if not diff_is_empty(d):
             return True, "accessibility tree changed: " + "; ".join((d["added"] + d["changed"] + d["removed"])[:3])

@@ -33,7 +33,7 @@ from .coords import to_pixel_action
 from .env.base import Env, ExecResult, Observation
 from .errors import PrivacyBlocked, UserAbort
 from .grounding import Grounder
-from .hybrid import HybridConfig, HybridExecutor, wrap_fallback_result
+from .hybrid import HybridConfig, HybridExecutor, uncertain_activation, wrap_fallback_result
 from .llm.base import Budget, BudgetExceeded, EgressGate
 from .logger import TrajectoryLogger
 from .memory import Memory, Milestone, StepRecord
@@ -48,7 +48,7 @@ from .verify import Check, Verdict, Verifier
 from .verify.receipts import make_receipt, summarize_postconditions
 
 TERMINAL_STATUSES = {"done", "fail", "uncertain", "step_limit", "budget_exhausted", "time_limit", "user_abort",
-                     "privacy_blocked"}
+                     "privacy_blocked", "invalid_checkpoint"}
 
 
 @dataclass
@@ -320,6 +320,10 @@ class GUIAgent:
           3) 只有放行才把 exec_a 发往环境。
         原动作 a 与安全摘要保持脱敏；未知占位符不静默输入原文，而是返回 blocked_by_safety 并说明缺少配置。
         """
+        if (a.binding and obs is not None and obs.snapshot_id
+                and a.binding.get("snapshot_id") != obs.snapshot_id):
+            now = time.time()
+            return ExecResult(False, "stale_target: action belongs to another observation", now, now)
         if a.type == "type" and a.element_id is not None:
             return self._targeted_type(a, obs, origin)
         if obs is not None and a.binding is None:
@@ -354,22 +358,46 @@ class GUIAgent:
             if exec_a.type in TOOL_ACTIONS:
                 res = self.hybrid.run_tool(exec_a)
             elif exec_a.type == "invoke":
+                element = obs.element(exec_a.element_id) if obs is not None else None
+                identity = self.env.element_identity(element) if element is not None else None
                 res, fallback = self.hybrid.run_semantic(exec_a, obs)
                 if fallback is not None:
                     self.hybrid.stats["fallbacks"] += 1
                     if self.log:
                         self.log.step(kind="modality_fallback", step=self.step_no, origin=origin,
                                       reason=self._scrub(res.error), route=res.route)
-                    res = wrap_fallback_result(res, self._execute_gated(fallback, obs, origin + ":fallback"))
+                    fresh = self._observe()
+                    candidates = [e for e in fresh.elements if identity is not None
+                                  and self.env.element_identity(e) == identity]
+                    # Test-only backends without stable bindings keep their
+                    # old grounding; real backends must prove the same node.
+                    if identity is None and not fresh.snapshot_id and element is not None:
+                        candidates = [e for e in fresh.elements if e.name == element.name and e.role == element.role]
+                    if len(candidates) != 1 or element is None or candidates[0].is_password != element.is_password:
+                        now = time.time()
+                        second = ExecResult(False, "stale_target: fallback target changed; observe again", now, now)
+                    else:
+                        current = candidates[0]
+                        fallback = replace(fallback, element_id=current.id, x=current.center[0], y=current.center[1],
+                                           binding=None)
+                        second = self._execute_gated(fallback, fresh, origin + ":fallback")
+                    res = wrap_fallback_result(res, second)
                     self.hybrid._count(fallback, res)
             else:
                 res = self.env.execute(exec_a)
                 res.signals.setdefault("modality", modality_of(exec_a, res.route))
         self.performance.execution(res.route)
         res.error, res.output = self._scrub(res.error), self._scrub(res.output)   # 执行层报错可能回显输入
+        if uncertain_activation(exec_a, obs) and any(s in res.error for s in ("background_no_effect", "native_action_error", "background_intrusion")):
+            self.guard.remember_uncertain(exec_a, obs)
         if not res.ok and "blocked_by_safety" in (res.error or ""):
             self.guard.remember_denial(a, obs, res.error)      # 环境层（例如 Web 白名单）拦截也是终止性的
         return res
+
+    def _remember_unconfirmed(self, a: Action, before: Observation, res: ExecResult, check: Check) -> None:
+        if (res.ok and uncertain_activation(a, before)
+                and check.verdict != Verdict.SUCCESS):
+            self.guard.remember_uncertain(a, before)
 
     def _settled_for_check(self, baseline: Optional[Observation] = None) -> tuple[Observation, bool]:
         """收尾核验用的观察：未稳定或仍有忙碌指示时再等待复查（最多 busy_rechecks 次）。返回 (观察, 是否已稳定)。
@@ -412,6 +440,17 @@ class GUIAgent:
         self._replans = 0
         self._resume = resume
         try:
+            if resume:
+                if resume.get("task", "").strip() != task.strip():
+                    return self._finish("invalid_checkpoint", False, 0, "checkpoint belongs to another task")
+                state = resume.get("safety_state") or {}
+                self.guard.denied.update(state.get("denied") or {})
+                self.guard.uncertain.update(state.get("uncertain") or {})
+                if state.get("privacy_blocked"):
+                    self.scrubber.mark_sensitive()
+                    # The checkpoint deliberately does not serialize private
+                    # plaintext needed to reconstruct every redaction rule.
+                    raise PrivacyBlocked("sensitive checkpoint needs its original private session; refusing unsafe resume")
             return self._run(task)
         except BudgetExceeded as e:
             if self.log:
@@ -460,7 +499,10 @@ class GUIAgent:
         from dataclasses import asdict
         self.log.write_json("checkpoint.json", {"task": task, "subgoals": [asdict(s) for s in self._subgoals],
                                                 "done_ids": list(self._done_ids), "step_no": self.step_no,
-                                                "replans": self._replans, "saved_at": time.time()})
+                                                "replans": self._replans, "saved_at": time.time(),
+                                                "safety_state": {"denied": dict(self.guard.denied),
+                                                                 "uncertain": dict(self.guard.uncertain),
+                                                                 "privacy_blocked": self.scrubber.images_blocked}})
 
     def _run(self, task: str) -> RunResult:
         self._replans = 0
@@ -637,6 +679,7 @@ class GUIAgent:
                 check = self.verifier.check_step(before, after, action, res, stable, expected=sg.expected,
                                                  task_window=self.cfg.task_window, expect_text=sg.expect_text or None,
                                                  action_desc=view_s)
+            self._remember_unconfirmed(action, before, res, check)
             check.signals["execution_route"] = res.route
             check.signals["modality"] = res.signals.get("modality") or modality_of(action, res.route)
             for k in ("background", "pointer_moved", "focus_stolen", "fallback_reason", "background_effect",

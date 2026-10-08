@@ -112,6 +112,8 @@ class WindowsEnv(Env):
         """后台语义动作：只要求观察时的窗口仍存在、控件身份不变；不检查也不改变前台窗口。"""
         if not a.binding or a.binding.get("snapshot_id") != self._snapshot_id or not self._snapshot_window:
             return ExecResult(False, "stale_target: observation changed; observe again", t0, time.time())
+        if a.method == "focus":
+            return ExecResult(False, "background_unavailable: SetFocus requires foreground input", t0, time.time())
         try:
             if not ctypes.windll.user32.IsWindow(ctypes.c_void_p(self._snapshot_window[0])):
                 return ExecResult(False, "stale_target: observed window closed", t0, time.time())

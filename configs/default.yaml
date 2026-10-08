@@ -98,7 +98,7 @@ hybrid:
   dispatch: auto          # invoke 默认投递：auto（后台优先、无生效证据且方法幂等时改走前台）| background | foreground
   verify_background: true # 后台动作后重新观察，确认真的生效（勾选翻转 / 值写入 / 无障碍树或像素变化）
   fallback_to_foreground: true
-  modality_recovery: true # 点击无效 → 语义动作；后台无效 → 前台点击（每个子目标各一次，并重新验证）
+  modality_recovery: true # 幂等意图可换模态；invoke/toggle 等已投递且结果不明的激活不重放
 
 tools:
   shell:

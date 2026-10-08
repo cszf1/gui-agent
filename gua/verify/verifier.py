@@ -233,7 +233,14 @@ class Verifier:
             if new_d and action.type in _CHANGE_ACTIONS:
                 sig["new_dialog"] = new_d[0].name
                 # 若动作本身就是去“打开”这个对话框，则交给后续规则/模型判断
-                if not (expect_text and expect_text.lower() in _norm(new_d[0].name)):
+                from .postconditions import evaluate as eval_expected_dialog
+                explicit = list(getattr(action, "expect", None) or [])
+                predicts_dialog = any(pc.get("kind") == "element_state" and pc.get("role") == "dialog"
+                                      and pc.get("exists") is True
+                                      and _norm(pc.get("name", "")) == _norm(new_d[0].name) for pc in explicit)
+                expected_dialog = predicts_dialog and stable and not is_busy(after) and \
+                    eval_expected_dialog(explicit, before, after, use_a11y=True).verdict == "success"
+                if not expected_dialog and not (expect_text and expect_text.lower() in _norm(new_d[0].name)):
                     return Check(Verdict.BLOCKED, f"a dialog appeared: {new_d[0].name!r}", "L1", sig)
         # 3) 被遮挡：点击位置上的元素在点击前就被别的层盖住（Web 的 covered 标记）
         if self.use_a11y and pt and action.type in {"click", "double_click"}:

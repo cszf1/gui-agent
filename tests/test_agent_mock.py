@@ -45,11 +45,11 @@ def click_save_until_saved(env):
     return fn
 
 
-def test_flaky_click_recovers_and_verifies():
+def test_unacknowledged_click_is_not_replayed_or_claimed_done():
     env = make_env(flaky_first=True, delay_frames=1)
     res = build(env, click_save_until_saved(env)).run("save the document")
-    assert res.status == "done", res
-    assert env.state.get("saved")
+    assert res.status != "done" and not res.claimed_done
+    assert not env.state.get("saved")
     assert any(r.startswith("no_effect") for r in res.recoveries)
 
 
@@ -87,6 +87,10 @@ def test_unexpected_popup_is_blocked_then_handled():
                     fired.append(1)
                     env.state.pop("saved", None)
                     env.popup = "Unexpected update dialog"
+                elif a.type == "click" and a.target == "OK":
+                    # The dialog completes the pending save; re-clicking Save
+                    # after an uncertain activation would replay the intent.
+                    env.state["saved"] = True
                 return r
             env.execute = wrapped
     agent.before_step.append(hook)
@@ -173,5 +177,6 @@ def test_reflection_note_reaches_actor():
         prompts.append(t)
         return click_save_until_saved(env)(s, t, i)
     res = build(env, actor_fn, reflector_fn=lambda s, t, i: '{"diagnosis":"click ignored","advice":"click again"}').run("save")
-    assert res.status == "done"
+    assert res.status != "done" and not res.claimed_done
+    assert not env.state.get("saved")
     assert any("click again" in p for p in prompts)

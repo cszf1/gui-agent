@@ -6,28 +6,30 @@
 前身是只支持 Windows 的 `win-gui-agent`（`wga`）。研究方向 A：**执行验证与失败恢复**
 （时间失配：页面没刷新就判断、窗口被最小化/抢焦点、目标在屏幕外……）。
 
-一套核心（规划 → 定位 → 安全闸门 → 执行 → 分级验证 → 分类恢复 → 反思 → 里程碑）跑在 6 个后端上：
-**Windows / macOS / Linux(X11) / Android(adb) / Web(Playwright) / Mock**。
+一套核心（规划 → 定位 → 安全闸门 → 执行 → 分级验证 → 分类恢复 → 反思 → 里程碑）跑在 7 个后端上：
+**Windows / macOS / Linux(X11) / Android(adb) / Web(Playwright) / Mock / Remote**。
+产品仍以本机 Windows 桌面 App 为主；Remote 与 Linux 沙盒用于可选的开发、评测与 MCP 接入，不提供云电脑托管服务。
 
 - 设计说明：[docs/design.md](docs/design.md)
 - 审查修复对照（四轮；审查条目 → 改动 → 回归测试）：[docs/review-fixes.md](docs/review-fixes.md)
+- v0.6 审查、修订与实测范围：[docs/review-v0.6.md](docs/review-v0.6.md)
 - 开源 computer-use agent 调研与取舍：[docs/research.md](docs/research.md)（v0.6 对标见 [§5](docs/research.md#5-v06-对标)）
 
-## 桌面 App（v0.5 开发版）
+## 桌面 App（v0.6 开发版）
 
 新增 Windows 优先的聊天桌面 App：在设置里填写 **Base URL、API Key 和模型名称**，然后输入自然语言任务。
 支持本机桌面和独立浏览器操作、执行画面、步骤记录、确认操作、暂停/接管、停止及运行报告。
 界面采用 Electron + React + TypeScript，复用 Python 执行引擎。
 
 - [启动、模型配置和 Windows 打包](desktop/README.md)
-- [架构、语言选择与 ZCode/Codex/Claude/Muse/Grok Bot 官方参考](docs/desktop-app.md)
+- [架构、语言选择与 ZCode/Codex/Claude/Meta Muse/Grok Bot 公开资料](docs/desktop-app.md)
 - [v0.5 执行改进、Cua 参考和可重复基准](docs/execution-improvements.md)
 
 无 API Key 时可以从界面试运行本地表单。此演示使用预设动作，不代表真实模型自主任务的成功率。
 
 ## 更新日志
 
-### v0.6.0（源码；未发布 GitHub Release，未推送）
+### v0.6.0（源码与 Windows 安装包 CI；未发布 GitHub Release）
 
 - **混合动作空间**：新增语义动作 `invoke`（invoke / toggle / select / set_value / focus / expand / collapse / scroll_into_view）
   与 shell / 文件 / 注册 API 工具。工具默认全部关闭；shell 只允许白名单可执行文件、argv 直接 exec、不继承密钥环境变量。
@@ -35,12 +37,15 @@
 - **后置条件**：actor 可为每一步预测 `expect`（文本出现 / 消失、元素状态、窗口标题、URL、像素区域、工具输出），规则逐条核验，
   全部成立才算成功证据。规划器也可为子目标给出后置条件：`check_goal` 中任一明确不成立即失败，`check_final` 收尾时重新核验。
 - **后台执行与效果核验**：Web 绑定观察到的 DOM 节点、Windows 走 UIA 模式，均不移动指针；后台动作后检测侵入（指针 / 前台变化）
-  并要求生效证据，没有证据时幂等方法改走前台，非幂等 `invoke` 不自动重放。
-- **换模态恢复**：GUI 点击无效 → 语义动作；后台语义无效 → 前台（各一次），换模态生成的动作重新经过安全闸门。
+  并要求生效证据。明确缺少 pattern 时可改走前台；已经投递但结果不明时，只有存在等价前台路径的幂等方法可重试。
+- **换模态恢复**：选中 / 聚焦等幂等操作可在 GUI 与语义动作之间恢复，生成的动作重新观察、确认同一控件并经过安全闸门。
+  已投递的点击、`toggle`、`invoke`、提交等非幂等动作结果不明时禁止重放，包括 fixed-retry、MCP 后续调用与 checkpoint 续跑。
 - **已验证完成凭据**：`receipts.json` 记录结论、证据等级、逐步模态 / 路由 / 后置条件和判定时刻画面摘要；`gua run --stream`
-  输出清洗后的事件流；`--resume` 从 checkpoint 续跑，已完成子目标先在当前画面重新验证。
+  输出清洗后的事件流；`--resume` 从 checkpoint 续跑，已完成子目标先在当前画面重新验证，拒绝与未确认激活记录也被恢复。
+  凭据记录可观察的界面条件，不证明服务端业务事实；含敏感状态的 checkpoint 因不保存明文清洗规则而拒绝跨进程续跑。
 - **沙箱电脑**：`gua sandbox up` 在本机起 Xvfb + AT-SPI + openbox（可选 noVNC）+ HTTP 守护进程；`--platform remote` 通过
   `RemoteEnv` 操作；支持人工接管 / 交还（接管期间拒绝 agent 动作与截图）、快照 / 重置。附 `sandbox/Dockerfile`。
+  noVNC 在服务器端限制输入，接管 / 交回等待服务端模式确认；快照仅还原工作目录与应用启动列表，不含进程内存。
 - **`gua mcp`**：MCP stdio 服务器，提供 observe / act / verify / run_task / takeover / handback / snapshot / reset / live_view；
   `act` 返回规则验证结论，需确认的动作默认拒绝。
 - **评测**：`gua eval --workers N` 并行（remote 任务每个 worker 一台本机沙箱电脑）；新增沙箱任务 `tasks/sandbox/`、
@@ -247,7 +252,7 @@ gua/
   mcp_server.py   v0.6 `gua mcp`
 configs/          default.yaml、models/*.yaml、ablations/*.yaml、web_local.yaml、mock.yaml
 tasks/            windows/ macos/ linux/ android/ web/ + web_assets/*.html（自包含的本地网页任务）；v0.6：sandbox/ cuabench/ osworld_subset/（合成）
-sandbox/          v0.6 Dockerfile + entrypoint.sh（镜像未构建验证）
+sandbox/          v0.6 Dockerfile + entrypoint.sh（真实容器验证见 review-v0.6.md）
 tests/            mock 单元测试、fixture 解析测试、真实 Chromium 集成测试
 ```
 
@@ -340,7 +345,7 @@ gua eval tasks/sandbox --policy scripted --workers 2       # v0.6：并行，每
 |---|---|---|
 | web | form_submit / todo_add | 基本表单、输入框值与复选框的 L1 核验 |
 | web | delayed_report | 加载中等待（旧报告是陈旧证据，`raw_loop` 会错误宣告完成） |
-| web | modal_export | 点击被意外弹窗吞掉 → BLOCKED → 处理弹窗 → 重做 |
+| web | modal_export | 明确核验条款弹窗这个中间结果 → 同意条款 → 下一步导出，不重放未确认的点击 |
 | web | long_page_save | 目标在视口外 → 越界 → 按距离滚动 → 重做 |
 | web | form_focus_steal | 第 3 步前新标签页抢焦点 → 动作前核对 → 恢复焦点 |
 | windows | notepad_append_save / calc_result_to_notepad / explorer_make_folder | v0.1 任务（抢焦点 / 弹窗干扰） |
@@ -372,10 +377,14 @@ v0.3 起每个配置都先被推导成一个 `CapabilityPolicy`（`gua/policy.py
 pytest -q                 # 全部（没有 playwright/chromium 时 web 集成测试自动跳过）
 pytest -q -m "not web"    # 只跑 mock / fixture / 离线后端测试（CI 三平台矩阵）
 python -B -m pytest -q -p no:cacheprovider               # 不写字节码、不用 pytest 缓存（审查者的 Windows 跑法）
-GUA_TEST_NO_PLAYWRIGHT=1 python -B -m pytest -q -p no:cacheprovider   # 模拟没装 Playwright：4 个 Web 模块整体跳过
+GUA_TEST_NO_PLAYWRIGHT=1 python -B -m pytest -q -p no:cacheprovider   # 模拟没装 Playwright：Web 模块自动跳过
 ```
 
-v0.6.0 在沙箱（Linux aarch64，Python 3.12.15，Playwright + Chromium headless，另装 Xvfb / xdotool / openbox / x11vnc /
+本次审查实测（Linux x86_64 / Python 3.12，真实 Chromium 与 Xvfb/GTK/AT-SPI）：**562 passed**；
+`GUA_TEST_NO_PLAYWRIGHT=1` 为 **485 passed, 8 skipped**。
+桌面构建、12 项单元测试、1 项真实 Electron E2E 和真实 Docker/noVNC 检查通过。详见 [审查记录](docs/review-v0.6.md)。
+
+原始 v0.6 附件作者报告（审查前，Linux aarch64，Python 3.12.15，Playwright + Chromium headless，另装 Xvfb / xdotool / openbox / x11vnc /
 websockify / dbus-x11 / python3-pyatspi / gir1.2-gtk-3.0 以运行沙箱电脑测试），`NO_PROXY=127.0.0.1,localhost`：
 
 - `python -B -m pytest -p no:cacheprovider`：**530 passed, 0 skipped**（因单条命令 120 s 限制分两段运行：
@@ -400,10 +409,10 @@ GitHub Actions：`core` 任务在 ubuntu / windows / macos × Python 3.10 / 3.12
 |---|---|
 | 敏感输入 / 安全闸门 | ✅ 假模型截获验证统一请求清洗、严格截图阻断、短秘密、最终输入过闸与纯视觉受限；真实 Chromium 验证重定向、嵌套焦点、表单身份及输入移焦；桌面 / Android 仍只用 fixture / fake 验证 |
 | 核心逻辑（动作解析与校验、坐标变换链、验证规则、收尾核验、恢复决策、记忆、反思、安全闸门、预算硬上限、能力策略、日志/报告、CLI） | ✅ mock 单元测试 + 审查回归测试（含随机往返 / 模糊测试） |
-| **Web 后端** | ✅ 沙箱内真实 Chromium 端到端：6 个本地任务在更严格的收尾核验下仍全部通过，等待 / 弹窗 / 滚动 / 抢焦点 4 条恢复路径都真实触发；`raw_loop` 复现“错误宣告完成”；安全闸门拦下“Delete account”；**域名白名单在浏览器层拦截链接 / 新标签页 / 302 重定向 / JS 跳转 / window.open**（本地 HTTP 服务器验证白名单外主机收不到请求） |
-| Windows 后端 | 🟡 命令构造（启动应用不再经过 cmd）、UIA → 元素转换（含 IsPassword）、fail-safe 传播用假模块在 Linux 上测过；**v0.2 / v0.3 都未在真机复测** |
+| **Web 后端** | ✅ 真实 Chromium：6 个本地任务通过；等待 / 滚动 / 抢焦点恢复与明确预测的条款弹窗流程；`raw_loop` 复现错误宣告完成；安全闸门和域名白名单边界有真实本地 HTTP 验证 |
+| Windows 后端 | ✅ v0.5 已通过真实 Windows CI WinForms/UIA 的中文/ASCII 替换、键盘兼容、Toggle/Select/Invoke 与冻结引擎检查；v0.6 显式后台 pattern 的 CI 状态见审查记录。复杂本机应用仍需实测 |
 | macOS 后端 | 🟡 AX 树转换（含 AXSecureTextField 子角色）、AppleScript argv 传参、fail-safe 传播用假模块测过；**未在 Mac 上运行** |
-| Linux 后端 | 🟡 AT-SPI 树转换、open_app 校验、fail-safe 传播测过；沙箱无 X11 桌面，**未端到端运行** |
+| Linux 后端 | 🟡 原生 LinuxEnv 的树转换、open_app 与 fail-safe 用 fixture 测试；独立的 RemoteEnv + Xvfb/GTK/AT-SPI 已实际端到端运行，不代替原生宿主桌面验证 |
 | Android 后端 | 🟡 uiautomator XML 解析、adb 命令构造与注入防护（假 adb）；**未连接真机/模拟器** |
 | 模型后端 | 🟡 只测了请求构造与响应映射（OpenAI 兼容含 GPT-5/o 系列参数、Anthropic Messages、computer-use 工具与拖拽、UI-TARS 解析、坐标变换）；**没有用真实 API 跑过任务**，GPT-5/o 系列参数兼容是按文档写的、未经真实调用验证 |
 | 脚本策略 | ⚠️ 只证明非模型部分可用；步骤级 L2 在脚本模式下是乐观桩，子目标 / 任务收尾的 L2 桩一律返回 uncertain（所以脚本任务必须靠可规则核验的 expect_text 才能完成），不代表真实模型能力 |
@@ -414,15 +423,15 @@ GitHub Actions：`core` 任务在 ubuntu / windows / macos × Python 3.10 / 3.12
 | 部分 | 实际端到端运行过 | 只有 fixture / 单元 / 假模块测试 |
 |---|---|---|
 | 混合执行器、后置条件、换模态恢复、工具通道 | 真实 Chromium（Web DOM 语义路径）；本机沙箱电脑（Xvfb + AT-SPI，语义动作不移动指针、前台输入移动指针、失配目标拒绝） | 换模态恢复的故障场景（后台投递丢失、指针失效）只在 MockEnv 故障注入里出现 |
-| Windows UIA 后台语义执行 | ❌ 未在 Windows 真机运行 | ✅ 仅用假 UIA 模块测试 |
+| Windows UIA 后台语义执行 | 新增真实 Windows CI WinForms 检查，最终运行状态见 [审查记录](docs/review-v0.6.md) | 密码属性变化和延迟等边界另用假 UIA 验证；未证明任意应用均支持后台操作 |
 | 沙箱电脑：接管 / 交还、快照 / 重置、并行隔离 | ✅ 本机 Xvfb 模式（与当前用户同权限，**不是安全隔离**） | — |
-| `sandbox/Dockerfile` 镜像 | ❌ **镜像从未构建**，也未在容器里运行 | — |
+| `sandbox/Dockerfile` 镜像 | ✅ 已真实构建并运行非 root 容器；GTK/AT-SPI 中文填写、Toggle/Invoke、后台指针/前台不变、RFB 接管/交回、截图阻断、重置通过 | 未完成容器隔离安全审计；noVNC 无独立认证，示例仅发布回环端口 |
 | `gua mcp` | ✅ stdio 子进程对真实 Chromium、对本机沙箱电脑 | — |
 | 完成凭据、事件流、续跑 | — | ✅ MockEnv 单元测试 |
 | `gua eval --workers N` | ✅ 2 个 worker 各自一台本机沙箱电脑（脚本策略） | — |
 | Cua-Bench 兼容层 | ✅ 文档示例 `hello_file_env` 用 oracle、`gua_form_subscribe` 用 oracle 与脚本化 gua agent，在本机沙箱电脑上跑通 | 兼容层是子集，不是官方 `cua-bench` 包；未与官方 `cb` CLI 对照 |
 | OSWorld 适配 | ✅ 合成任务 `gua_form_pro.json` 在沙箱里跑通 | **合成任务，不是 OSWorld 官方任务**，没有任何 OSWorld 成绩 |
-| 模态基准 `docs/benchmarks/modalities-2026-10-08.json` | ✅ 已运行 | ⚠️ **脚本策略（固定 demo 步骤）**，不是模型证据 |
+| 模态基准 | 原始附件数据保留，修订后结果见 [审查记录](docs/review-v0.6.md) 与 `modalities-review-2026-10-08.json` | ⚠️ 固定脚本与 mock 注入，不能当作真实模型或横向竞争成绩 |
 | 真实模型 API | ❌ v0.6 没有用任何真实模型 API 跑过任务 | 只测了请求构造与响应映射 |
 
 ## 已知限制
@@ -456,6 +465,8 @@ GitHub Actions：`core` 任务在 ubuntu / windows / macos × Python 3.10 / 3.12
   来源站点的业务副作用。域名白名单默认限制导航，只有 `block_subresources=True` 才同时限制子资源，不是系统网络沙箱。
 - 新鲜证据仍是界面文本片段层面的判断，不等于服务器业务结果证明。目标本来就已满足、没有新证据的子目标在没有 L2 时
   保持 uncertain；常驻的不定进度条或忙碌状态会阻止收尾。L2 的可靠性仍需真实模型实验验证。
+- v0.6 快照仅包含工作目录与应用启动列表，重置不恢复进程内存。本机 Xvfb 与当前用户同权限。
+  已进入敏感保护的 checkpoint 拒绝跨进程续跑，避免丢失清洗规则后泄露先前输入；可在原 MCP 会话内继续观察和验证。
 
 ## 下一步
 

@@ -49,7 +49,7 @@ def _sandbox_ok():
         return False
     from gua.sandbox.local import requirements
     r = requirements()
-    return all(r[k] for k in ("Xvfb", "xdotool", "dbus-launch", "pyatspi", "gtk"))
+    return all(r[k] for k in ("Xvfb", "xdotool", "openbox", "dbus-launch", "pyatspi", "gtk"))
 
 
 needs_sandbox = pytest.mark.skipif(not _sandbox_ok(), reason="sandbox prerequisites missing")

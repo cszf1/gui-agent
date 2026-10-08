@@ -234,12 +234,12 @@ def test_background_toggle_is_verified_and_does_not_move_pointer():
     assert "checked=True" in r.signals["background_effect"] and hy.stats["background_verified"] == 1
 
 
-def test_background_drop_falls_back_to_foreground_for_toggle():
+def test_background_drop_does_not_replay_nonidempotent_toggle():
     env = MockEnv(buttons=[MockButton("Subscribe", (10, 10, 120, 40), role="checkbox", checked=False,
                                       background_drop=True)])
     obs = env.observe()
     r, fb = _hy(env).run_semantic(Action("invoke", element_id=0, method="toggle"), obs)
-    assert not r.ok and r.error.startswith("background_no_effect") and fb is not None and fb.type == "click"
+    assert not r.ok and r.error.startswith("background_no_effect") and fb is None
 
 
 def test_nonidempotent_invoke_without_effect_is_not_replayed():
@@ -248,7 +248,7 @@ def test_nonidempotent_invoke_without_effect_is_not_replayed():
                                       background_drop=True)])
     obs = env.observe()
     r, fb = _hy(env).run_semantic(Action("invoke", element_id=0, method="invoke"), obs)
-    assert fb is None and r.ok          # 无法证明生效也无法证明未生效：不重放，交给步骤验证 / 恢复
+    assert fb is None and not r.ok and "background_no_effect" in r.error
     assert clicks == []
 
 
@@ -308,7 +308,7 @@ def test_agent_semantic_action_end_to_end_records_modality():
     assert res.modality["modality"].get("semantic") == 1 and res.modality["intrusions"] == 0
 
 
-def test_agent_pointer_dead_click_recovers_by_switching_to_semantic():
+def test_agent_pointer_dead_activation_is_not_replayed_via_semantic():
     env = _sub_env(pointer_dead=True)
     seen = []
 
@@ -320,12 +320,12 @@ def test_agent_pointer_dead_click_recovers_by_switching_to_semantic():
             return '{"action":{"type":"done"}}'
         return '{"action":{"type":"click","target":"Subscribe"}}'
     res = _agent(env, actor, PLAN_SUB).run("subscribe")
-    assert res.status == "done", (res.message, res.recoveries)
-    assert any("switch_modality" in r for r in res.recoveries)
-    assert env.buttons[0].checked is True          # 只切换了一次（没有重复切换回去）
+    assert res.status != "done" and not res.claimed_done
+    assert not any("switch_modality" in r for r in res.recoveries)
+    assert env.buttons[0].checked is False and not env.state.get("subscribed")
 
 
-def test_agent_background_drop_invoke_switches_to_foreground_once():
+def test_agent_background_drop_invoke_is_not_replayed_by_actor_or_recovery():
     env = _sub_env(background_drop=True)
 
     def actor(s, t, i):
@@ -333,8 +333,9 @@ def test_agent_background_drop_invoke_switches_to_foreground_once():
             return '{"action":{"type":"done"}}'
         return '{"action":{"type":"invoke","method":"invoke","target":"Subscribe"}}'
     res = _agent(env, actor, PLAN_SUB).run("subscribe")
-    assert res.status == "done", (res.message, res.recoveries)
-    assert env.state.get("subscribed") and env.buttons[0].checked is True
+    assert res.status != "done" and not res.claimed_done
+    assert not env.state.get("subscribed") and env.buttons[0].checked is False
+    assert res.modality["modality"].get("semantic") == 1
 
 
 def test_agent_shell_tool_runs_through_gate_and_is_logged(tmp_path):

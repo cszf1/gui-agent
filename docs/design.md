@@ -113,14 +113,14 @@ Verifier 与 Scrubber；对标资料与差异点见 [research.md §5](research.m
 
 | 模块 | 作用 | 验证情况 |
 |---|---|---|
-| `gua/hybrid.py` | 混合执行器：code/API 优先、语义（后台）动作次之、像素 GUI 兜底。后台尝试前检查模态遮挡；之后做侵入检测（指针 / 前台）与生效检测；幂等方法无生效证据时可改走前台，非幂等 `invoke` 不自动重放（返回 `background_no_effect`）。`hybrid.mode: gui_only` 为消融基线 | mock + 真实 Chromium + 本机沙箱电脑 |
-| `gua/tools/registry.py` | shell / 文件 / 注册 API 通道。默认全部关闭；shell 只允许白名单可执行文件、argv 直接 exec、最小环境、超时与 rlimit；文件限定在根目录 | 单元测试 |
-| `gua/verify/postconditions.py` | 规则后置条件（`text_appears` / `text_disappears` / `element_state` / `window_title` / `url` / `pixel_change` / `output_contains`），结论只有 pass / fail / unknown；全部 pass 才算成功证据；密码元素的值从不读取 | 单元测试 + 端到端 |
+| `gua/hybrid.py` | 混合执行器：语义 / 工具动作与像素 GUI。后台尝试前检查模态遮挡；之后做侵入检测（指针 / 前台）与生效检测。缺少 pattern 可走前台；已投递但无证据时，仅 `set_value` / `select` / `focus` 等存在等价路径的幂等动作允许恢复。点击、`toggle`、`invoke`、提交结果不明时不重放；侵入也不触发重放 | mock + 真实 Chromium + 本机 Xvfb + Docker/GTK |
+| `gua/tools/registry.py` + `gua/sandbox/process.py` | shell / 文件 / 注册 API 通道。默认全部关闭；shell 限定可执行文件、argv 直接 exec、最小环境、超时及有界输出。POSIX 子进程组清理与 Python 子进程 rlimit；Windows 普通完成后的脱离进程清理尚无 Job Object 保证。文件限定根目录、读入有上限 | 单元测试，含大输出内存与超时子进程检查 |
+| `gua/verify/postconditions.py` | 规则后置条件（`text_appears` / `text_disappears` / `element_state` / `window_title` / `url` / `pixel_change` / `output_contains`），结论只有 pass / fail / unknown；控件匹配歧义为 unknown，隐含条件绑定控件身份；密码元素的值不读取。特定状态核验失败不能用无关像素变化覆盖 | 单元测试 + 端到端 |
 | 子目标级后置条件（`planner.py` / `verifier.py`） | 规划器可为子目标给出后置条件（校验后最多 8 条）。`check_goal`：任一明确不成立 → 失败；全部成立且无 `expect_text` → 成功；有 `expect_text` 时仍需文本证据。`check_final` 对没有 `expect_text` 的子目标重新核验其后置条件 | `tests/test_v06_subgoal_postconditions.py` + 沙箱任务 |
-| `gua/env/web.py` / `gua/env/windows.py` + `uia_execution.py` | 后台语义执行：Web 绑定观察到的 DOM 节点（身份复核，遮挡目标与密码 `set_value` 拒绝）；Windows 用 UIA Invoke/Toggle/SelectionItem/Value/ExpandCollapse/ScrollItem 模式，缺模式返回 `background_unavailable` | Web：真实 Chromium；**Windows：仅假 UIA 模块测试，未在真机运行** |
-| `gua/recovery.py`（`SWITCH_MODALITY`） | GUI 点击无效 → 语义动作；后台语义无效 → 前台点击（各一次），生成的动作重新过闸 | mock 故障注入 |
-| `gua/verify/receipts.py` + `agent.py` + `logger.py` | 完成凭据（`receipts.json`）、`gua run --stream` 清洗后的事件流、每个里程碑写 `checkpoint.json`，`--resume` 先在当前画面重新验证已完成子目标 | MockEnv 单元测试 |
-| `gua/env/remote.py` + `gua/sandbox/`（`daemon.py`、`local.py`、`apps/gua_form.py`）+ `sandbox/Dockerfile` | 沙箱电脑：HTTP 守护进程提供截图 / xdotool 输入 / AT-SPI 树与语义动作 / shell / 文件 / 接管与交还 / 快照与重置 / noVNC；`LocalSandbox` / `SandboxPool` 在本机起独立 DISPLAY 并行 | 本机 Xvfb + AT-SPI 端到端；**Docker 镜像未构建**；本机模式与当前用户同权限，不是安全隔离 |
+| `gua/env/web.py` / `gua/env/windows.py` + `uia_execution.py` | 后台语义执行：Web 绑定观察到的 DOM 节点；Windows 用 UIA Invoke/Toggle/SelectionItem/Value/ExpandCollapse/ScrollItem 模式，缺模式返回 `background_unavailable`，`SetFocus` 需要前台。原生读写前后复核身份与密码属性 | Web：真实 Chromium；Windows 新增真实 WinForms 后台路径 CI，运行状态见审查记录 |
+| `gua/recovery.py`（`SWITCH_MODALITY`） | 幂等 GUI 选择 / 聚焦与语义路径之间恢复；结果不明的非幂等激活记录在共享闸门，阻断换模态、fixed-retry 和 actor 重放 | mock 故障注入 + 延迟执行回归 |
+| `gua/verify/receipts.py` + `agent.py` + `logger.py` | 完成凭据、清洗后的事件流、里程碑 checkpoint；续跑绑定任务、恢复拒绝与未确认激活、重新验证已完成子目标。敏感 checkpoint 不保存明文清洗规则，跨进程恢复返回 `privacy_blocked` | MockEnv、MCP 会话与续跑回归 |
+| `gua/env/remote.py` + `gua/sandbox/` + `sandbox/Dockerfile` | HTTP 观察原子返回图像与树；动作绑定确切快照和稳定 AT-SPI 控件身份；接管与观察/动作串行，交回后旧观察失效。noVNC 服务端输入限制等待确认；快照还原工作目录与应用启动列表，不含内存 | 本机 Xvfb + AT-SPI、真实 Docker/GTK/noVNC；本机模式与当前用户同权限，容器未作隔离安全审计 |
 | `gua/mcp_server.py`（`gua mcp`） | MCP stdio 服务器：observe / act / verify / run_task / takeover / handback / snapshot / reset / live_view；`act` 返回规则验证结论而非 “OK”；需确认的动作默认拒绝 | stdio 子进程 + 真实 Chromium / 沙箱 |
 | `gua/eval/runner.py`（`run_suite_parallel`、`gua eval --workers N`） | 每个 worker 独立环境（remote 任务各起一台本机沙箱电脑），结果合并汇总；行内新增模态 / 回退 / 侵入 / 已验证凭据计数 | 沙箱端到端（2 workers） |
 | `gua/eval/cuabench_compat.py` / `gua/eval/osworld.py` | Cua-Bench 任务目录子集兼容层（oracle 或 gua agent 运行，判分由任务自己的 evaluate 决定）；OSWorld 形状任务 JSON 子集转换，不支持的配置 / 判分函数直接拒绝 | 沙箱端到端；合成任务，非官方任务集 |
@@ -132,7 +132,8 @@ Verifier 与 Scrubber；对标资料与差异点见 [research.md §5](research.m
 Actor 动作 → SafetyGuard.gate(意图) → HybridExecutor
    ├─ shell / file / api → ToolRegistry（默认关闭）→ 输出经 Scrubber → 后置条件 output_contains
    ├─ invoke（语义）→ 遮挡检查 → 后台投递 → 侵入检测 → 重新观察 → 生效检测
-   │      └─ 无生效证据：幂等 → 前台等价动作（重新过闸）；非幂等 → background_no_effect → RecoveryPolicy
+   │      └─ 无生效证据：有等价路径的幂等 → 重新观察同一控件 → 前台动作（重新过闸）
+   │                      非幂等 → background_no_effect → 记录未确认激活，等待/重新规划，不重放
    └─ 像素 GUI → env.execute
 → Verifier.check_step（含动作级后置条件）→ 子目标 check_goal（含子目标级后置条件）→ receipt
 ```

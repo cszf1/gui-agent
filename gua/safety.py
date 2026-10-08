@@ -46,7 +46,7 @@ import json
 import re
 import sys
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 from .actions import Action
@@ -117,6 +117,7 @@ class SafetyGuard:
     allowed_apps: list[str] = field(default_factory=list)   # 非空时 open_app 只允许这些应用名 / 包名
     log: list[dict] = field(default_factory=list)
     denied: dict[str, str] = field(default_factory=dict)    # 动作签名 → 被拒绝的原因（终止性）
+    uncertain: dict[str, str] = field(default_factory=dict) # 已投递、效果未确认的激活意图，禁止换模态重放
     held: set = field(default_factory=set)                  # key_down 按住、尚未 key_up 的规范键名
     # 共享秘密清洗器（第三轮条目 5）：默认每个 SafetyGuard 自带一个，独立使用不受影响；
     # GUIAgent 会把它替换成“整次运行同一个”实例，使普通 token 字段里的已配置秘密也不露出。
@@ -386,6 +387,20 @@ class SafetyGuard:
     def signatures(self, a: Action, obs: Optional[Observation] = None) -> list[str]:
         """一个动作的全部意图签名：动作本身 + 它激活的目标（同一目标的不同激活方式共享）。"""
         sigs = [self.base_signature(a)]
+        if a.type == "file" and self.tools is not None and a.method in {"write", "append"}:
+            try:
+                path = self.tools._resolve(a.path or ".")
+                sigs.append(f"file-mutation|{_h(str(path))}")
+            except Exception:
+                pass  # The capability check below refuses invalid paths.
+        text_intent = a.type == "type" or (a.type == "invoke" and a.method == "set_value")
+        if a.type == "type" and a.submit:
+            # A rejected submission must not also prohibit a harmless edit.
+            text_intent = self.assess(replace(a, submit=False), obs).verdict != "allow"
+        if text_intent:
+            e = obs.element(a.element_id) if obs is not None and a.element_id is not None else self.focus(obs)[0]
+            if e is not None:
+                sigs.append(f"text-entry|{_h(self._element_label(e))}|{_h(a.text)}")
         asig = self._activation_sig(a, obs)
         if asig:
             sigs.insert(0, asig)
@@ -396,7 +411,30 @@ class SafetyGuard:
         return self.signatures(a, obs)[0]
 
     def remember_denial(self, a: Action, obs: Optional[Observation], reason: str) -> None:
-        self.denied[self.signature(a, obs)] = reason
+        for sig in self.signatures(a, obs):
+            self.denied[sig] = reason
+
+    def remember_uncertain(self, a: Action, obs: Optional[Observation]) -> None:
+        for sig in self.uncertain_signatures(a, obs):
+            self.uncertain[sig] = "activation was dispatched but its effect is uncertain; do not replay"
+
+    def uncertain_signatures(self, a: Action, obs: Optional[Observation]) -> list[str]:
+        element = obs.element(a.element_id) if obs is not None and a.element_id is not None else None
+        if element is None and a.point is not None and obs is not None:
+            element = obs.element_at(*a.point)
+        kind = self._activation(a, obs)
+        if element is None and kind is not None:
+            element = focus_target(obs)[0]
+        if element is not None:
+            attrs = element.attrs
+            if attrs.get("document_id") and attrs.get("dom_id"):
+                node = attrs.get("form_submit_id") if kind != "pointer" else None
+                identity = [attrs["document_id"], node or attrs["dom_id"]]
+            else:
+                identity = attrs.get("uia_runtime") or attrs.get("atspi_identity")
+            if identity:
+                return ["unconfirmed-node|" + _h(json.dumps(identity, sort_keys=True))]
+        return self.signatures(a, obs)
 
     def summary(self, a: Action, obs: Optional[Observation] = None) -> str:
         """安全摘要（日志 / 终端 / 提示词）；考虑“同一观察上焦点已移动”的情况。"""
@@ -412,7 +450,7 @@ class SafetyGuard:
         try:
             if not is_sensitive_type(a, obs, self.focus(obs)[1]):
                 return
-            if a.type == "type" and a.text:
+            if (a.type == "type" or (a.type == "invoke" and a.method == "set_value")) and a.text:
                 self.scrubber.add(a.text, explicit=True)
             else:
                 self.scrubber.mark_sensitive()
@@ -467,6 +505,12 @@ class SafetyGuard:
         except Exception as e:  # noqa: BLE001  — 摘要都算不出来：保守地完全脱敏、按危险处理
             fstate, err = "unknown", type(e).__name__
             shown, sigs = json.dumps({"type": a.type, "redacted": True}), [f"error|{a.type}"]
+        uncertain = next((s for s in self.uncertain_signatures(a, obs) if s in self.uncertain), None)
+        if uncertain:
+            why = self.uncertain[uncertain]
+            self.log.append({"action": shown, "decision": "deny", "reason": why, "approved": False,
+                             "uncertain_effect": True})
+            return False, why
         hit = next((s for s in sigs if s in self.denied), None)
         if hit:
             why = self._scrub_text(f"previously rejected, not retried: {self.denied[hit]}")
@@ -499,7 +543,7 @@ class SafetyGuard:
             if self._moves_focus(a, obs):
                 self._stale_obs = obs
         else:
-            for s in (d.sigs or sigs[:1]):
+            for s in set(sigs + (d.sigs or [])):
                 self.denied[s] = reason or "rejected"
         return approved, reason
 

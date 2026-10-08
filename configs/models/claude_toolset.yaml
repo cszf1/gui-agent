@@ -1,0 +1,8 @@
+# v0.7：Claude 原生电脑工具（多轮会话 + 批量动作 + zoom），export ANTHROPIC_API_KEY=...
+# tool_version：computer_toolset_20260801（GA，无 beta 头）| computer_20251124 | computer_20250124
+# 每个动作仍逐个经过安全闸门与验证；批内首个失败后其余动作不执行（官方文档要求的停止文本回给模型）。
+models:
+  planner: {provider: anthropic, model: claude-opus-4-8, api_key_env: ANTHROPIC_API_KEY, max_tokens: 2048}
+  actor: {provider: anthropic, model: claude-opus-4-8, api_key_env: ANTHROPIC_API_KEY, max_tokens: 2048}
+  grounder: null
+actor: {kind: claude_toolset, tool_version: computer_toolset_20260801, enable_zoom: true, keep_images: 3, prune_every: 5}

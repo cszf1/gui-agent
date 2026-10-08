@@ -343,6 +343,11 @@ class SafetyGuard:
             if w:
                 hits.append((f"dragging onto {label2[:60].lower()!r} may delete / send data ({w})",
                              f"drag-to|{label2.lower()}"))
+        for check in getattr(a, "provider_checks", None) or []:
+            # v0.7: provider-raised checks (prompt injection / sensitive domain ...) are never
+            # auto-acknowledged; a human confirms or the action is refused (deny mode).
+            code = str((check or {}).get("code") or "provider_check")[:60] if isinstance(check, dict) else "provider_check"
+            hits.append((f"model provider safety check {code!r} requires human confirmation", base))
         if hits:
             return Decision("confirm", "; ".join(dict.fromkeys(r for r, _ in hits)),
                             list(dict.fromkeys(s for _, s in hits)))

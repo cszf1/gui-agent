@@ -680,6 +680,8 @@ class GUIAgent:
                                                  task_window=self.cfg.task_window, expect_text=sg.expect_text or None,
                                                  action_desc=view_s)
             self._remember_unconfirmed(action, before, res, check)
+            if hasattr(self.actor, "record_outcome"):      # v0.7：批量动作适配器据此“停止于首个失败”
+                self.actor.record_outcome(action, res, check)
             check.signals["execution_route"] = res.route
             check.signals["modality"] = res.signals.get("modality") or modality_of(action, res.route)
             for k in ("background", "pointer_moved", "focus_stolen", "fallback_reason", "background_effect",

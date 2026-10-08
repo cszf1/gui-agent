@@ -1,0 +1,7 @@
+# v0.7：OpenAI Responses API 的 computer 工具（computer_call.actions 批量动作），export OPENAI_API_KEY=...
+# legacy: true 时改用 computer_use_preview（旧模型）。pending_safety_checks 从不自动确认：交给安全闸门人工确认。
+models:
+  planner: {provider: openai, model: gpt-5.4, api_key_env: OPENAI_API_KEY}
+  actor: {provider: openai, model: gpt-5.4, api_key_env: OPENAI_API_KEY}
+  grounder: null
+actor: {kind: openai_computer, legacy: false}

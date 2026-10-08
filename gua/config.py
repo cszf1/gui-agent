@@ -149,6 +149,22 @@ def build_agent(cfg: dict, env: Env, logger: Optional[TrajectoryLogger] = None,
         # 直接用 AnthropicLLM（它的 post() 在请求前自行检查预算；BudgetGate 不能代理属性赋值）
         actor_llm.budget = budget
         actor = ClaudeComputerUseActor(actor_llm, platform)
+    elif kind in {"claude_toolset", "claude_computer"}:
+        # v0.7：Claude 原生电脑工具（多轮会话、批量动作、zoom）；版本可选 computer_toolset_20260801 /
+        # computer_20251124 / computer_20250124
+        from .llm.cua import TOOLSET, ClaudeComputerActor
+        actor_llm.budget = budget
+        actor = ClaudeComputerActor(actor_llm, platform, tool_version=act.get("tool_version", TOOLSET),
+                                    enable_zoom=act.get("enable_zoom", True), keep_images=act.get("keep_images", 3),
+                                    prune_every=act.get("prune_every", 5))
+    elif kind == "openai_computer":
+        from .llm.cua import OpenAIComputerActor, OpenAIResponsesClient
+        spec = (cfg.get("models") or {}).get("actor") or (cfg.get("models") or {}).get("planner") or {}
+        price = spec.get("price")
+        client = OpenAIResponsesClient(spec.get("model", "computer-use"), base_url=spec.get("base_url"),
+                                       api_key_env=spec.get("api_key_env", "OPENAI_API_KEY"), budget=budget,
+                                       price=tuple(price) if price else None, extra=spec.get("extra_body"))
+        actor = OpenAIComputerActor(client, platform, legacy=act.get("legacy", False))
     else:
         actor = Actor(actor_g, platform, act.get("max_elements_in_prompt", 80), act.get("coord_space"),
                       policy=policy, max_pixels=act_pixels)

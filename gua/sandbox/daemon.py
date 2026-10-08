@@ -20,7 +20,7 @@ Cua Sandbox / Cua Driver（屏幕 + 无障碍树 + 动作层、后台语义动�
   POST /files      {method, path, text}   路径限定在 workdir 内
   POST /launch     {argv}            启动 --apps 白名单里的应用（任务 setup / open_app）
   POST /takeover   {}                人工接管：暂停 agent 的所有动作与截图
-  POST /handback   {}                交还控制：epoch+1，之前的观察全部失效
+  POST /handback   {}                交还控制（v0.7：需要人工 X-Gua-Control-Token）：epoch+1，之前的观察全部失效
   POST /snapshot   {name}            记录 workdir 内容 + 正在运行的已启动应用
   POST /reset      {name}            关闭已启动应用 → 还原 workdir → 重启快照里的应用
   GET  /liveview                     live view / 接管 URL（由启动器通过参数传入）
@@ -49,7 +49,8 @@ if __package__:
 else:
     from process import run_bounded
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
+SECRET_ENV = {"GUA_SANDBOX_TOKEN", "GUA_SANDBOX_CONTROL_TOKEN"}
 
 XKEYS = {
     "ctrl": "ctrl", "control": "ctrl", "alt": "alt", "shift": "shift", "meta": "super", "cmd": "super",
@@ -71,6 +72,9 @@ ACTION_NAMES = {
 class State:
     def __init__(self, args):
         self.token = args.token
+        # Hand-back is a human decision. It needs a separate control token that
+        # the agent-side client (RemoteEnv / MCP) is never given.
+        self.control_token = args.control_token
         self.display = args.display
         self.workdir = Path(args.workdir).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
@@ -89,7 +93,9 @@ class State:
         self.identities: dict[object, str] = {}
         self.procs: list[tuple[list[str], subprocess.Popen]] = []
         self.lock = threading.RLock()
-        self.env = dict(os.environ, DISPLAY=self.display)
+        # Launched apps must not inherit the daemon's credentials.
+        self.env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
+        self.env["DISPLAY"] = self.display
 
 
 S: State
@@ -402,13 +408,28 @@ def do_input(a: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------- 应用 / shell / 文件 / 快照
+def app_allowed(name: str) -> bool:
+    """Exact allowlist match. A bare allowlisted name resolves through PATH only;
+    a path whose basename merely matches (./gua-form, /tmp/x/gua-form) is refused."""
+    if not isinstance(name, str) or not name or name.startswith("-"):
+        return False
+    if name in S.apps:
+        if os.sep in name or (os.altsep and os.altsep in name):
+            return os.path.isabs(name)
+        return shutil.which(name, path=S.env.get("PATH")) is not None
+    return False
+
+
 def launch(argv: list[str]) -> dict:
     if not argv or not argv[0]:
         return {"ok": False, "error": "invalid_argument: empty argv"}
-    if os.path.basename(argv[0]) not in S.apps and argv[0] not in S.apps:
+    if not app_allowed(argv[0]):
         return {"ok": False, "error": f"blocked_by_safety: app {argv[0]!r} not in sandbox --apps allowlist"}
     env = dict(S.env, GTK_MODULES="gail:atk-bridge", NO_AT_BRIDGE="0", GUA_SANDBOX_WORKDIR=str(S.workdir))
-    p = subprocess.Popen(argv, cwd=str(S.workdir), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    exe = argv[0] if os.path.isabs(argv[0]) else shutil.which(argv[0], path=S.env.get("PATH"))
+    if not exe:
+        return {"ok": False, "error": f"tool_error: executable not found: {argv[0]!r}"}
+    p = subprocess.Popen([exe, *argv[1:]], cwd=str(S.workdir), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
     with S.lock:
         S.procs.append((list(argv), p))
@@ -462,9 +483,12 @@ def files(body: dict) -> dict:
             data = stream.read(200_000)
         return {"ok": True, "output": data.decode("utf-8", "replace"), "route": "file"}
     if m in {"write", "append"}:
-        full.parent.mkdir(parents=True, exist_ok=True)
-        with open(full, "a" if m == "append" else "w", encoding="utf-8") as f:
-            f.write(str(body.get("text") or ""))
+        try:
+            full.parent.mkdir(parents=True, exist_ok=True)
+            with open(full, "a" if m == "append" else "w", encoding="utf-8") as f:
+                f.write(str(body.get("text") or ""))
+        except OSError as e:
+            return {"ok": False, "error": f"tool_error: {type(e).__name__}", "route": "file"}
         return {"ok": True, "output": f"{m} ok", "route": "file"}
     return {"ok": False, "error": f"unsupported file method {m}", "route": "file"}
 
@@ -475,7 +499,13 @@ def shell(body: dict) -> dict:
     argv = body.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
         return {"ok": False, "error": "invalid_argument: argv must be a list of strings", "route": "shell"}
-    timeout = min(float(body.get("timeout") or 20), 120)
+    try:
+        timeout = float(body.get("timeout") or 20)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_argument: timeout must be a number", "route": "shell"}
+    if not (0 < timeout < float("inf")):
+        return {"ok": False, "error": "invalid_argument: timeout must be a positive finite number", "route": "shell"}
+    timeout = min(timeout, 120.0)
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(S.workdir), "LANG": "C.UTF-8",
            "DISPLAY": S.display}
     try:
@@ -596,7 +626,10 @@ class Handler(BaseHTTPRequestHandler):
         # Takeover is acknowledged only after an in-flight observation/action
         # has completed. No screenshot can escape after that acknowledgement.
         with S.lock:
-            return self._get_locked()
+            try:
+                return self._get_locked()
+            except Exception as e:  # noqa: BLE001
+                return self._send(500, {"ok": False, "error": f"internal error: {type(e).__name__}"})
 
     def _get_locked(self):
         u = urlparse(self.path)
@@ -646,7 +679,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             return self._send(400, {"ok": False, "error": f"bad request: {e}"})
         with S.lock:
-            return self._post_locked(body)
+            try:
+                return self._post_locked(body)
+            except Exception as e:  # noqa: BLE001 - malformed fields must not drop the connection
+                return self._send(400, {"ok": False, "error": f"bad request: {type(e).__name__}"})
 
     def _post_locked(self, body):
         u = urlparse(self.path)
@@ -657,6 +693,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(503, {"ok": False, "error": "paused_for_human: unable to enable VNC control"})
             return self._send(200, {"ok": True, "takeover": S.takeover_url, "liveview": S.liveview})
         if u.path == "/handback":
+            supplied = self.headers.get("X-Gua-Control-Token", "")
+            if not (S.control_token and hmac.compare_digest(supplied, S.control_token)):
+                return self._send(403, {"ok": False, "error": "forbidden: hand-back needs the human control token"})
             with S.lock:
                 if not vnc_control(False):
                     S.takeover = True
@@ -701,6 +740,8 @@ def main(argv=None) -> None:
     ap.add_argument("--display", default=os.environ.get("DISPLAY", ":1"))
     ap.add_argument("--token", default=os.environ.get("GUA_SANDBOX_TOKEN") or "")
     ap.add_argument("--token-file", default="")
+    ap.add_argument("--control-token-file", default="",
+                    help="file holding the human hand-back token (else $GUA_SANDBOX_CONTROL_TOKEN, else generated)")
     ap.add_argument("--workdir", default=os.path.expanduser("~/gua-workdir"))
     ap.add_argument("--snapdir", default="")
     ap.add_argument("--shell", action="store_true", help="allow /shell inside this disposable sandbox")
@@ -713,6 +754,15 @@ def main(argv=None) -> None:
     if args.token_file:
         Path(args.token_file).write_text(args.token)
         os.chmod(args.token_file, 0o600)
+    args.control_token = os.environ.get("GUA_SANDBOX_CONTROL_TOKEN") or ""
+    if args.control_token_file:
+        args.control_token = Path(args.control_token_file).read_text().strip()
+    if not args.control_token:
+        args.control_token = secrets.token_urlsafe(24)
+        print(json.dumps({"control_token": args.control_token,
+                          "note": "human hand-back token; do not give it to the agent"}), file=sys.stderr, flush=True)
+    if args.token == args.control_token:
+        raise SystemExit("control token must differ from the agent token")
     S = State(args)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(json.dumps({"listening": f"http://{args.host}:{srv.server_address[1]}", "display": args.display}),

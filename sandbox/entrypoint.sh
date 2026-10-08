@@ -2,6 +2,8 @@
 # 与 gua/sandbox/local.py 做同样的事：虚拟显示器 → 会话总线 → AT-SPI → 窗口管理器 → VNC/noVNC → 守护进程
 set -eu
 : "${GUA_SANDBOX_TOKEN:?set GUA_SANDBOX_TOKEN}"
+# v0.7：人工交还令牌 GUA_SANDBOX_CONTROL_TOKEN 可选；未设置时守护进程生成一个并只打印到容器日志（stderr）。
+# agent 侧客户端只拿 GUA_SANDBOX_TOKEN，不能自行交还控制权。守护进程不会把两个令牌传给它启动的应用。
 Xvfb "$DISPLAY" -screen 0 "$GUA_SCREEN" -nolisten tcp &
 for i in $(seq 1 100); do [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && break; sleep 0.05; done
 eval "$(dbus-launch --sh-syntax)"

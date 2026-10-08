@@ -1,7 +1,7 @@
 # gua 沙箱电脑镜像（v0.6）：Xvfb + openbox + x11vnc/noVNC + AT-SPI + gua 守护进程 + 演示 GTK 应用
 # 构建：  docker build -t gua-sandbox -f sandbox/Dockerfile .
 # 运行：  docker run --rm -p 127.0.0.1:8765:8765 -p 127.0.0.1:6080:6080 \
-#           -e GUA_SANDBOX_TOKEN=change-me --cap-drop ALL --security-opt no-new-privileges \
+#           -e GUA_SANDBOX_TOKEN=change-me -e GUA_SANDBOX_CONTROL_TOKEN=human-only --cap-drop ALL --security-opt no-new-privileges \
 #           --pids-limit 512 --memory 2g gua-sandbox
 # 客户端：gua run --platform remote --remote-url http://127.0.0.1:8765 ...（token 从 GUA_SANDBOX_TOKEN 读取）
 # 验证：python scripts/smoke-sandbox.py --image gua-sandbox

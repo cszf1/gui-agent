@@ -199,6 +199,7 @@ def _sandbox(a) -> None:
         print(json.dumps(requirements()))
         sb = LocalSandbox(port=a.port, shell=a.shell, apps=a.apps).start()
         print(json.dumps({"url": sb.url, "token_env": "GUA_SANDBOX_TOKEN", "token": sb.token,
+                          "control_token_env": "GUA_SANDBOX_CONTROL_TOKEN", "control_token": sb.control_token,
                           "liveview": sb.liveview_url, "takeover": sb.takeover_url, "workdir": sb.workdir,
                           "apps": ["gua-form"] + list(a.apps)}, ensure_ascii=False, indent=2))
         print("Ctrl-C 结束并清理沙箱", flush=True)
@@ -211,7 +212,8 @@ def _sandbox(a) -> None:
             sb.stop()
         return
     from .env.remote import RemoteEnv
-    env = RemoteEnv(a.remote_url, os.environ.get("GUA_SANDBOX_TOKEN", ""))
+    env = RemoteEnv(a.remote_url, os.environ.get("GUA_SANDBOX_TOKEN", ""),
+                    control_token=os.environ.get("GUA_SANDBOX_CONTROL_TOKEN", "") if a.op == "handback" else "")
     fn = {"status": env.health, "takeover": env.takeover, "handback": env.handback, "liveview": env.live_view,
           "snapshot": lambda: env.snapshot(a.name), "reset": lambda: env.reset(a.name) or {"ok": True}}[a.op]
     print(json.dumps(fn(), ensure_ascii=False, indent=2))

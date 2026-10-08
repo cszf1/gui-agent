@@ -55,6 +55,32 @@ def requirements() -> dict[str, bool]:
             "pyatspi": python_with("pyatspi") is not None, "gtk": python_with("gi") is not None}
 
 
+def start_display_and_wm(spawn, probe, deadline: float, with_wm: bool = True, sleep=time.sleep,
+                         clock=time.monotonic) -> None:
+    """Wait until X accepts clients, then start openbox and wait for it (v0.7).
+
+    The X socket file appears before Xvfb accepts connections; a window manager
+    started in that gap exits at once, which made cold starts flaky. ``probe(argv)``
+    returns whether a short X client command succeeded. openbox gets at most two
+    restarts, so a broken installation fails fast instead of looping.
+    """
+    while not probe(["xdotool", "getdisplaygeometry"]):
+        if clock() > deadline:
+            raise RuntimeError("Xvfb did not accept connections")
+        sleep(0.05)
+    if not with_wm:
+        return
+    wm = spawn(["openbox"])
+    restarts = 0
+    while not probe(["xdotool", "get_desktop"]):
+        if wm.poll() is not None and restarts < 2 and clock() < deadline:
+            restarts += 1
+            wm = spawn(["openbox"])
+        elif wm.poll() is not None or clock() > deadline:
+            raise RuntimeError("openbox did not start; check installed themes and XDG configuration")
+        sleep(0.05)
+
+
 @dataclass
 class LocalSandbox:
     display: Optional[int] = None
@@ -66,6 +92,8 @@ class LocalSandbox:
     liveview: bool = True
     procs: list = field(default_factory=list)
     token: str = field(default_factory=lambda: secrets.token_urlsafe(18))
+    # v0.7: hand-back belongs to the human operator; the agent-side RemoteEnv never receives it.
+    control_token: str = field(default_factory=lambda: secrets.token_urlsafe(18))
     url: str = ""
     liveview_url: str = ""
     takeover_url: str = ""
@@ -98,6 +126,13 @@ class LocalSandbox:
                 self.stop()
                 raise RuntimeError("Xvfb did not start")
             time.sleep(0.05)
+        x_probe = lambda argv: subprocess.run(argv, env=self.env, capture_output=True,  # noqa: E731
+                                              timeout=2).returncode == 0
+        try:      # dbus-launch and the window manager both need a server that accepts clients
+            start_display_and_wm(self._spawn, x_probe, deadline, with_wm=False)
+        except RuntimeError:
+            self.stop()
+            raise
         if shutil.which("dbus-launch"):
             out = subprocess.run(["dbus-launch", "--sh-syntax"], capture_output=True, text=True, env=self.env).stdout
             for line in out.splitlines():
@@ -109,16 +144,11 @@ class LocalSandbox:
                              if Path(p).exists()), None)
             if launcher:
                 self._spawn([launcher, "--launch-immediately"])
-        if shutil.which("openbox"):
-            wm = self._spawn(["openbox"])
-            while True:
-                desktop = subprocess.run(["xdotool", "get_desktop"], env=self.env, capture_output=True, timeout=2)
-                if desktop.returncode == 0:
-                    break
-                if wm.poll() is not None or time.monotonic() > deadline:
-                    self.stop()
-                    raise RuntimeError("openbox did not start; check installed themes and XDG configuration")
-                time.sleep(0.05)
+        try:
+            start_display_and_wm(self._spawn, x_probe, deadline, with_wm=bool(shutil.which("openbox")))
+        except RuntimeError:
+            self.stop()
+            raise
         if self.liveview and shutil.which("x11vnc") and shutil.which("websockify") and Path("/usr/share/novnc").exists():
             vnc, ws = free_port(), free_port()
             self._spawn(["x11vnc", "-display", disp, "-rfbport", str(vnc), "-localhost", "-shared", "-forever",
@@ -134,13 +164,18 @@ class LocalSandbox:
         wrapper.chmod(0o755)
         apps = list(self.apps) + [str(wrapper), "gua-form"]
         py = python_with("pyatspi") or sys.executable
-        argv = [py, str(DAEMON), "--port", str(self.port), "--display", disp, "--token", self.token,
+        # Credentials travel in the daemon's environment (readable only by this
+        # user), not argv (visible to every local user through ps / /proc/*/cmdline).
+        argv = [py, str(DAEMON), "--port", str(self.port), "--display", disp,
                 "--workdir", self.workdir, "--apps", *apps, "--liveview", self.liveview_url,
                 "--takeover-url", self.takeover_url]
         if self.shell:
             argv.append("--shell")
         self.env["PATH"] = f"{bindir}:{self.env.get('PATH', '')}"
-        self._spawn(argv)
+        daemon_env = dict(self.env, GUA_SANDBOX_TOKEN=self.token, GUA_SANDBOX_CONTROL_TOKEN=self.control_token)
+        p = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=daemon_env,
+                             start_new_session=True)
+        self.procs.append(p)
         self.url = f"http://127.0.0.1:{self.port}"
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         while True:
@@ -161,8 +196,14 @@ class LocalSandbox:
         return [str(Path(self._tmp) / "bin" / "gua-form")]
 
     def remote_env(self, **kw):
+        """Agent-side client: it gets the agent token only, never the hand-back token."""
         from ..env.remote import RemoteEnv
         return RemoteEnv(self.url, self.token, **kw)
+
+    def operator_env(self, **kw):
+        """Human/operator client that may hand control back after a takeover."""
+        from ..env.remote import RemoteEnv
+        return RemoteEnv(self.url, self.token, control_token=self.control_token, **kw)
 
     def stop(self) -> None:
         for p in reversed(self.procs):

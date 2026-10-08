@@ -13,7 +13,8 @@ def run_bounded(argv, *, cwd, env, timeout=20.0, max_output=8000, limits=False):
     command = list(argv)
     if limits and os.name == "posix" and not getattr(sys, "frozen", False):
         # No preexec_fn: parallel evaluations may launch from Python threads.
-        command = [sys.executable, __file__, "--limited-exec", str(timeout), *command]
+        # -I: the wrapper ignores PYTHON* variables and user site-packages.
+        command = [sys.executable, "-I", __file__, "--limited-exec", str(timeout), *command]
     process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=os.name == "posix")

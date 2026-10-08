@@ -41,9 +41,11 @@ class RemoteEnv(Env):
     targeted_input = True        # 指定字段输入：先点击聚焦，重新观察核对焦点节点路径，再输入
 
     def __init__(self, url: str, token: str, timeout: float = 30.0, max_elements: int = 150,
-                 wait_for_handback: bool = True, takeover_timeout: float = 600.0, poll: float = 0.5):
+                 wait_for_handback: bool = True, takeover_timeout: float = 600.0, poll: float = 0.5,
+                 control_token: str = ""):
         self.url = url.rstrip("/")
         self.token = token
+        self.control_token = control_token      # 只有人工操作端持有；agent 侧为空，不能自行交还
         self.timeout = timeout
         self.max_elements = max_elements
         self.wait_for_handback = wait_for_handback
@@ -56,10 +58,12 @@ class RemoteEnv(Env):
         self.input_epoch = 0
 
     # ------------------------------------------------------------------ HTTP
-    def _req(self, method: str, path: str, body: Optional[dict] = None, raw: bool = False):
+    def _req(self, method: str, path: str, body: Optional[dict] = None, raw: bool = False,
+             headers: Optional[dict] = None):
         data = json.dumps(body or {}).encode("utf-8") if method == "POST" else None
         req = urllib.request.Request(self.url + path, data=data, method=method,
-                                     headers={"X-Gua-Token": self.token, "Content-Type": "application/json"})
+                                     headers={"X-Gua-Token": self.token, "Content-Type": "application/json",
+                                              **(headers or {})})
         try:
             with self._opener.open(req, timeout=self.timeout) as r:
                 payload = r.read()
@@ -84,7 +88,10 @@ class RemoteEnv(Env):
         return r
 
     def handback(self) -> dict:
-        r = self._req("POST", "/handback")
+        if not self.control_token:
+            raise RemoteError("hand-back needs the human control token (GUA_SANDBOX_CONTROL_TOKEN); "
+                              "the agent cannot return control to itself")
+        r = self._req("POST", "/handback", headers={"X-Gua-Control-Token": self.control_token})
         if not r.get("ok"):
             raise RemoteError(r.get("error", "hand-back failed"))
         self.takeover_events.append({"event": "handback", "time": time.time()})

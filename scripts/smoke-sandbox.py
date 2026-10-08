@@ -120,9 +120,10 @@ def main():
     parser.add_argument("--image", default="gua-sandbox")
     args = parser.parse_args()
     token = secrets.token_urlsafe(24)
-    child_env = dict(os.environ, GUA_SANDBOX_TOKEN=token)
+    control = secrets.token_urlsafe(24)
+    child_env = dict(os.environ, GUA_SANDBOX_TOKEN=token, GUA_SANDBOX_CONTROL_TOKEN=control)
     cid = docker("run", "--detach", "--cap-drop=ALL", "--security-opt=no-new-privileges",
-                 "--pids-limit=512", "--memory=2g", "-e", "GUA_SANDBOX_TOKEN",
+                 "--pids-limit=512", "--memory=2g", "-e", "GUA_SANDBOX_TOKEN", "-e", "GUA_SANDBOX_CONTROL_TOKEN",
                  "-p", "127.0.0.1::8765", "-p", "127.0.0.1::6080",
                  args.image, env=child_env)
     vnc = None
@@ -169,7 +170,12 @@ def main():
         assert with_image.get("_status") == 423 and "image" not in with_image
         vnc.move(220, 230)
         wait_for(lambda: env.pointer_position() == (220, 230))
-        assert env.handback()["ok"]
+        try:
+            env.handback()
+            raise AssertionError("agent token handed control back to itself")
+        except RemoteError:
+            pass
+        assert RemoteEnv(env.url, token, control_token=control).handback()["ok"]
         vnc.move(330, 340)
         assert env.pointer_position() == (220, 230), "Human control continued after hand-back"
         assert "stale_target" in env.execute(old).error

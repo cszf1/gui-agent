@@ -110,14 +110,16 @@ def test_takeover_pauses_agent_actions_and_screenshots_then_handback_invalidates
     nowait = box.remote_env(wait_for_handback=False)
     with pytest.raises(Exception):
         nowait.observe()                               # 接管期间不截图
-    env.handback()
+    with pytest.raises(Exception):
+        env.handback()                                 # v0.7：agent 侧没有人工交还令牌，不能自行交还
+    box.operator_env().handback()
     r = env.execute(a)                                 # 交还后旧观察失效
     assert not r.ok and r.error.startswith("stale_target")
     assert env.observe().elements
 
 
 def test_agent_observe_waits_for_handback(box, env):
-    human = box.remote_env()
+    human = box.operator_env()
     human.takeover()
     threading.Timer(0.8, human.handback).start()
     t0 = time.monotonic()
@@ -244,7 +246,10 @@ def test_mcp_session_over_remote_sandbox_with_takeover(box, env, tmp_path):
     assert lv["ok"]
     r = call("act", action={"type": "invoke", "method": "invoke", "target": "Save"})
     assert r["isError"] and "paused_for_human" in r["structuredContent"]["error"]
-    call("handback")
+    r = srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",   # v0.7：模型不能通过 MCP 交还控制权
+                    "params": {"name": "handback", "arguments": {}}})
+    assert r["error"]["code"] == -32602
+    box.operator_env().handback()            # 人工操作端用独立令牌交还
     call("observe", include_image=False)
     v = call("verify", postconditions=[{"kind": "element_state", "name": "Subscribe", "checked": True}])
     assert v["structuredContent"]["verdict"] == "verified_done"

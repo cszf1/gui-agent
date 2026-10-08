@@ -253,6 +253,9 @@ class GUIAgent:
             g = self.grounder.ground(obs, a.target or "", a.element_id, zoom_around)
             if g is None:
                 return a, "grounding_failed"
+            if getattr(g, "confidence", 1.0) < getattr(self.grounder, "min_confidence", 0.0):
+                # v0.7：低置信的视觉定位不点击（宁可让模型换描述 / 用 element_id，也不点错控件）
+                return a, "grounding_failed"
             a.x, a.y = g.x, g.y
             if g.element is not None:
                 a.element_id = g.element.id

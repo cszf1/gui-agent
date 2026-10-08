@@ -36,6 +36,7 @@ class GroundingResult:
     source: str            # "a11y" | "a11y_fuzzy" | "vlm" | "vlm_zoom"
     element: Optional[UIElement] = None
     crop: Optional[tuple[int, int, int, int]] = None
+    confidence: float = 1.0      # v0.7：0..1；a11y 精确 1.0 / 模糊 0.8；VLM 由“全屏点 vs 放大复核点”一致性决定
 
 
 def _norm(s: str) -> str:
@@ -44,7 +45,8 @@ def _norm(s: str) -> str:
 
 class Grounder:
     def __init__(self, llm, mapper: CoordMapper, use_a11y: bool = True, zoom_factor: float = 2.5,
-                 prompt: str = GROUND_PROMPT, platform_desc: str = "a computer screen", fuzzy: bool = True):
+                 prompt: str = GROUND_PROMPT, platform_desc: str = "a computer screen", fuzzy: bool = True,
+                 refine: bool = False, agree_tol: float = 0.02):
         self.llm = llm
         self.mapper = mapper
         self.use_a11y = use_a11y
@@ -52,6 +54,11 @@ class Grounder:
         self.prompt = prompt
         self.platform_desc = platform_desc
         self.fuzzy = fuzzy
+        # v0.7：两阶段视觉定位——全屏粗定位后围绕该点裁剪放大再定位一次；两次结果的距离（占对角线比例）
+        # 超过 agree_tol 判为低置信（调用方可据此拒绝点击、要求换描述 / 用 element_id）。
+        self.refine = refine
+        self.agree_tol = agree_tol
+        self.min_confidence = 0.0     # 低于它的视觉定位结果由 agent 当作定位失败
 
     # 1) 无障碍树匹配
     def match_a11y(self, obs: Observation, target: str, element_id: Optional[int] = None) -> Optional[tuple[UIElement, str]]:
@@ -113,7 +120,7 @@ class Grounder:
         if m is not None and zoom_around is None:
             e, src = m
             x, y = e.center
-            return GroundingResult(x, y, src, element=e)
+            return GroundingResult(x, y, src, element=e, confidence=1.0 if src == "a11y" else 0.8)
         if zoom_around is not None and target:
             r = self.ground_zoom(obs.screenshot, target, zoom_around)
             if r:
@@ -126,4 +133,20 @@ class Grounder:
         p = self.ground_vlm(obs.screenshot, target)
         if p is None:
             return None
-        return GroundingResult(p[0], p[1], "vlm")
+        if not self.refine:
+            return GroundingResult(p[0], p[1], "vlm", confidence=0.6)
+        return self._refined(obs, target, p)
+
+    def _refined(self, obs: Observation, target: str, p: tuple[int, int]) -> GroundingResult:
+        """放大复核：一致 → 用更精细的放大点（高置信）；不一致 → 仍给放大点但标低置信。"""
+        r = self.ground_zoom(obs.screenshot, target, (int(p[0]), int(p[1])))
+        w, h = obs.screenshot.size
+        if r is None:
+            return GroundingResult(p[0], p[1], "vlm", confidence=0.3)
+        dist = ((r[0] - p[0]) ** 2 + (r[1] - p[1]) ** 2) ** 0.5 / max(1.0, (w * w + h * h) ** 0.5)
+        conf = 0.9 if dist <= self.agree_tol else max(0.1, 0.5 - dist)
+        el = obs.element_at(r[0], r[1]) if self.use_a11y else None
+        if el is not None and el.role in {"button", "link", "textbox", "checkbox", "radio", "combobox",
+                                          "menuitem", "tab", "listitem", "treeitem", "switch", "cell"}:
+            conf = min(1.0, conf + 0.05)
+        return GroundingResult(r[0], r[1], "vlm_refined", crop=r[2], confidence=round(conf, 3))

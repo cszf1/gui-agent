@@ -107,7 +107,9 @@ def build_agent(cfg: dict, env: Env, logger: Optional[TrajectoryLogger] = None,
     max_pixels = g.get("max_pixels", 1280 * 28 * 28)
     grounder = Grounder(ground_g, CoordMapper(g.get("coord", "norm1000"), max_pixels),
                         use_a11y=policy.a11y_grounding, zoom_factor=g.get("zoom_factor", 2.5),
-                        platform_desc=PLATFORM_DESC.get(platform, platform), fuzzy=g.get("fuzzy", True))
+                        platform_desc=PLATFORM_DESC.get(platform, platform), fuzzy=g.get("fuzzy", True),
+                        refine=g.get("refine", False), agree_tol=g.get("agree_tol", 0.02))
+    grounder.min_confidence = float(g.get("min_confidence", 0.0))
     v = cfg.get("verification") or {}
     verifier = Verifier(ver_g, platform=platform, policy=policy)
     r = cfg.get("recovery") or {}
@@ -168,6 +170,7 @@ def build_agent(cfg: dict, env: Env, logger: Optional[TrajectoryLogger] = None,
     else:
         actor = Actor(actor_g, platform, act.get("max_elements_in_prompt", 80), act.get("coord_space"),
                       policy=policy, max_pixels=act_pixels)
+        actor.som = bool(act.get("som", False))
         if hcfg.mode != "gui_only":
             actor.semantic_hint = env.semantic_methods if getattr(env, "semantic_actions", False) else None
             actor.extra_docs = tools.prompt_docs()

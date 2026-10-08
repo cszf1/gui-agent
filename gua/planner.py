@@ -180,6 +180,8 @@ class Actor:
         # v0.6：语义动作提示（env.semantic_methods）与工具通道说明（ToolRegistry.prompt_docs）；None/空 = 不出现
         self.semantic_hint = None
         self.extra_docs: list[str] = []
+        # v0.7：Set-of-Mark——截图上画出编号框（编号 = element_id）；只在允许无障碍信息进入提示词时生效
+        self.som = False
 
     def system_prompt(self) -> str:
         bad = UNSUPPORTED.get(self.platform, set())
@@ -227,9 +229,14 @@ class Actor:
 
     def next_action(self, task: str, sg: Subgoal, total: int, obs: Observation, history: str,
                     milestones: str, feedback: str = "", notes: str = "(none)") -> tuple[Action, str]:
-        out = self.llm.chat(self.system_prompt(),
-                            self.user_prompt(task, sg, total, obs, history, milestones, feedback, notes),
-                            [obs.screenshot])
+        image = obs.screenshot
+        prompt = self.user_prompt(task, sg, total, obs, history, milestones, feedback, notes)
+        if self.som and self.policy.a11y_in_prompts and obs.elements:
+            from .som import render_som
+            image = render_som(obs)
+            prompt += ("\nThe screenshot shows numbered boxes on interactive elements; a box number is that "
+                       "element's element_id. Prefer element_id over coordinates.")
+        out = self.llm.chat(self.system_prompt(), prompt, [image])
         a, th = parse_model_action(out, self.coord_space or "pixel")
         attach_transform(a, out, self.max_pixels)
         return a, th

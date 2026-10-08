@@ -58,7 +58,8 @@ class ScriptedPolicy:
     # ---------------------------------------------------------------- planner
     def _sg_json(self, start: int = 0) -> str:
         return json.dumps({"subgoals": [{"goal": s["goal"], "expected": s.get("expected", ""),
-                                         "evidence": s.get("evidence", ""), "expect_text": s.get("expect_text", "")}
+                                         "evidence": s.get("evidence", ""), "expect_text": s.get("expect_text", ""),
+                                         **({"postconditions": s["postconditions"]} if s.get("postconditions") else {})}
                                         for s in self.subgoals[start:]]})
 
     def plan(self, system: str, text: str, images=None) -> str:
@@ -107,6 +108,25 @@ class ScriptedPolicy:
         return self._json(self._step_to_action(st, els), f"script step {i}")
 
     def _step_to_action(self, st: dict, els: list[dict]) -> dict:
+        a = self._step_to_action_inner(st, els)
+        if st.get("expect"):
+            a["expect"] = st["expect"]
+        return a
+
+    def _step_to_action_inner(self, st: dict, els: list[dict]) -> dict:
+        # v0.6：语义动作步骤（gui_only 消融时由混合执行器改写成前台点击 / 输入）
+        if "invoke" in st or "set_value" in st:
+            name = st.get("invoke") or st.get("set_value")
+            method = "set_value" if "set_value" in st else st.get("method", "invoke")
+            e = find(els, name, st.get("role"))
+            a = {"type": "invoke", "method": method, **({"element_id": e["id"]} if e else {"target": name})}
+            if method == "set_value":
+                a["text"] = st.get("text", "")
+            if st.get("dispatch"):
+                a["dispatch"] = st["dispatch"]
+            return a
+        if "shell" in st:
+            return {"type": "shell", "command": st["shell"]}
         for kind in ("click", "double_click", "right_click", "long_press"):
             if kind in st:
                 e = find(els, st[kind], st.get("role"))

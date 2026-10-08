@@ -13,7 +13,7 @@ v0.3：
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .actions import UNSUPPORTED, Action
@@ -36,6 +36,7 @@ class Subgoal:
     evidence: str = ""      # 如何确认真的完成（文件已保存、值已写入……）
     expect_text: str = ""   # 可选：完成后屏幕/无障碍树中必然出现的文字（L1 规则核验，零模型调用）
     persistent: bool = True  # expect_text 在任务结束时是否仍应可见（任务收尾核验会重新检查所有 persistent 的 expect_text）
+    postconditions: list = field(default_factory=list)   # v0.6：子目标级后置条件（规则核验，见 verify/postconditions.py）
 
 
 PLAN_SYSTEM = "You are a careful planner for a GUI agent operating {pdesc}."
@@ -46,6 +47,8 @@ Open windows/pages: {windows}
 Break the task into 1-8 ordered sub-goals. Each must be checkable on screen.
 If some text will certainly be visible once a sub-goal is done, put it in "expect_text" (else leave empty).
 Set "persistent": false if that text disappears later in the task (e.g. a transient toast).
+Optionally add "postconditions": rule-checkable facts that must hold when the sub-goal is done, e.g.
+[{{"kind":"element_state","name":"Subscribe","checked":true}}, {{"kind":"element_state","name":"Name","value":"Ada"}}].
 Reply JSON only:
 {{"subgoals": [{{"goal": "...", "expected": "what the screen shows after it", "evidence": "how to confirm it is truly done", "expect_text": "", "persistent": true}}]}}"""
 
@@ -138,8 +141,11 @@ class Planner:
             if not isinstance(s, dict):
                 continue
             txt = lambda k: s.get(k) if isinstance(s.get(k), str) else ""   # noqa: E731
+            pcs = s.get("postconditions")
+            from .verify.postconditions import validate_postcondition
+            pcs = [pc for pc in pcs if validate_postcondition(pc) is None][:8] if isinstance(pcs, list) else []
             out.append(Subgoal(start_id + len(out), txt("goal"), txt("expected"), txt("evidence"),
-                               txt("expect_text"), s.get("persistent", True) is not False))
+                               txt("expect_text"), s.get("persistent", True) is not False, pcs))
         return out or [Subgoal(start_id, task or "complete the task", "", "")]
 
     def _meta(self, obs: Observation) -> dict:

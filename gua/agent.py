@@ -441,7 +441,8 @@ class GUIAgent:
             fobs, stable = self._settled_for_check(None)
             with self.performance.measure("verify"):
                 c = self.verifier.check_goal(fobs, sg.goal, sg.evidence or sg.expected, sg.expect_text or None,
-                                             stable=stable, baseline=None)
+                                             stable=stable, baseline=None,
+                                             postconditions=getattr(sg, "postconditions", None))
             if c.verdict != Verdict.SUCCESS:
                 if self.log:
                     self.log.step(kind="resume_reverify_failed", subgoal=sg, evidence=self._scrub(c.evidence))
@@ -731,7 +732,8 @@ class GUIAgent:
         obs, stable = self._settled_for_check(self._sg_baseline)
         with self.performance.measure("verify"):
             c: Check = self.verifier.check_goal(obs, sg.goal, sg.evidence or sg.expected, sg.expect_text or None,
-                                                stable=stable, baseline=self._sg_baseline)
+                                                stable=stable, baseline=self._sg_baseline,
+                                                postconditions=getattr(sg, "postconditions", None))
         self._last_goal = (c, obs)
         return c.verdict == Verdict.SUCCESS, self._scrub(f"[{c.level}] {c.evidence}")
 

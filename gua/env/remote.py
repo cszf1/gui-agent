@@ -200,7 +200,7 @@ class RemoteEnv(Env):
     def snapshot(self, name: str = "default") -> dict:
         return self._req("POST", "/snapshot", {"name": name})
 
-    def reset(self, name: str = "default") -> None:  # type: ignore[override]
+    def reset(self, name: str = "pristine") -> None:  # type: ignore[override]
         self._req("POST", "/reset", {"name": name})
 
     def read_file(self, path: str) -> str:

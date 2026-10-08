@@ -1,0 +1,6 @@
+# sdist：沙箱镜像构建上下文、配置与任务集随源码包分发（wheel 只含 gua 包本身）
+include sandbox/Dockerfile sandbox/entrypoint.sh
+graft configs
+graft tasks
+graft docs
+global-exclude __pycache__ *.py[cod]

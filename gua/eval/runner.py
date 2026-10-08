@@ -77,6 +77,18 @@ def do_setup(steps: list[dict], env=None, task_dir: Optional[Path] = None) -> No
             from ..actions import Action
             env.execute(Action("open_app", app=s["app"]))
             time.sleep(s.get("wait", 2))
+        elif t == "sandbox_shell":            # v0.6：沙箱里的 setup 命令（守护进程需 --shell）
+            from ..actions import Action
+            r = env.run_tool(Action("shell", command=list(s["argv"])))
+            if not r.ok:
+                raise RuntimeError(f"sandbox setup command failed: {r.error}")
+        elif t == "sandbox_launch":           # v0.6：在沙箱电脑里启动应用，并等待某个元素出现
+            env.launch(list(s["argv"]))
+            deadline = time.monotonic() + s.get("timeout", 15)
+            while s.get("wait_for") and time.monotonic() < deadline:
+                if any(e.name == s["wait_for"] for e in env.observe().elements):
+                    break
+                time.sleep(0.2)
         else:
             raise ValueError(f"unknown setup step {t}")
 
@@ -106,8 +118,11 @@ def run_task(cfg: dict, task: dict, env, runs_root: str = "runs", rep: int = 0, 
     from .disturb import DisturbanceScheduler
 
     task_dir = Path(task.get("_dir", "."))
-    run_id = f"{tag or 'run'}-{task['id']}-r{rep}-{time.strftime('%H%M%S')}"
-    env.reset()
+    run_id = f"{tag or 'run'}-{task['id']}-r{rep}-{time.strftime('%H%M%S')}-{os.getpid()}-{id(env) % 10000}"
+    if getattr(env, "platform", "") == "remote":
+        env.reset("pristine")              # 每个任务从同一沙箱快照开始（可复现）
+    else:
+        env.reset()
     setup = list(task.get("setup", []))
     if task.get("start_url"):
         setup.insert(0, {"type": "open_url", "url": task["start_url"]})
@@ -143,6 +158,10 @@ def run_task(cfg: dict, task: dict, env, runs_root: str = "runs", rep: int = 0, 
         "budget_refused_calls": res.budget.refused if res else 0,
         "seconds": round(res.seconds, 1) if res else 0, "disturbed": bool(dist and dist.fired_at),
         "error": err, "run_dir": str(log.dir), "policy": policy,
+        "modality": (res.modality or {}).get("modality", {}) if res else {},
+        "fallbacks": (res.modality or {}).get("fallbacks", 0) if res else 0,
+        "intrusions": (res.modality or {}).get("intrusions", 0) if res else 0,
+        "verified_receipts": sum(1 for r in (res.receipts if res else []) if r.get("verdict") == "verified_done"),
     }
     row = log.scrub(row)          # v0.3.1：评测结果行（summary 文件 / stdout）也经过秘密清洗
     log.meta(task={k: v for k, v in task.items() if k != "_dir"}, platform=task.get("platform"),
@@ -150,6 +169,93 @@ def run_task(cfg: dict, task: dict, env, runs_root: str = "runs", rep: int = 0, 
     log.close(report=True)
     do_setup(task.get("teardown", []), env, task_dir)
     return row
+
+
+def _make_env(cfg: dict, p: str, sandbox=None):
+    from ..config import build_env
+    if p == "remote" and sandbox is not None:
+        env = sandbox.remote_env()
+        env.snapshot("pristine")
+        return env
+    env = build_env(cfg, p)
+    if p == "remote":
+        env.snapshot("pristine")
+    return env
+
+
+def run_suite_parallel(cfg: dict, tasks: list[dict], runs_root: str = "runs", repeats: int = 1,
+                       with_disturbance: bool = True, tag: str = "", policy: str = "model",
+                       platform: Optional[str] = None, quiet: bool = False, workers: int = 2,
+                       local_sandboxes: bool = True) -> dict:
+    """v0.6：多会话并行。每个 worker 线程有自己的环境（remote = 自己的一台本机沙箱电脑，web = 自己的浏览器）。
+
+    任务按 (task, rep) 放进队列；每个 worker 在自己的环境里串行执行，结果行合并后统一汇总。
+    """
+    import queue
+    import threading
+    work: "queue.Queue" = queue.Queue()
+    for task in tasks:
+        if policy == "scripted" and "demo" not in task:
+            continue
+        for rep in range(repeats):
+            work.put((task, rep))
+    rows: list[dict] = []
+    lock = threading.Lock()
+    need_remote = any((platform or t.get("platform")) == "remote" for t in tasks)
+    pool_ctx = None
+    boxes: list = []
+    if need_remote and local_sandboxes:
+        from ..sandbox.local import SandboxPool
+        pool_ctx = SandboxPool(workers, liveview=False)
+        boxes = pool_ctx.__enter__()
+
+    def worker(i: int) -> None:
+        envs: dict[str, object] = {}
+        try:
+            while True:
+                try:
+                    task, rep = work.get_nowait()
+                except queue.Empty:
+                    return
+                p = platform or task.get("platform", "windows")
+                if p not in envs:
+                    envs[p] = _make_env(cfg, p, boxes[i] if boxes else None)
+                import copy
+                row = run_task(copy.deepcopy(cfg), task, envs[p], runs_root, rep, with_disturbance, tag, policy)
+                row["worker"] = i
+                with lock:
+                    rows.append(row)
+                if not quiet:
+                    print(json.dumps({k: row[k] for k in ("task", "rep", "worker", "passed", "status", "steps")},
+                                     ensure_ascii=False), flush=True)
+        finally:
+            for e in envs.values():
+                try:
+                    e.close()
+                except Exception:
+                    pass
+    t0 = time.monotonic()
+    try:
+        threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(max(1, workers))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+    summary = summarize(rows)
+    summary["workers"] = workers
+    summary["wall_seconds"] = round(time.monotonic() - t0, 1)
+    Path(runs_root).mkdir(parents=True, exist_ok=True)
+    out = Path(runs_root) / f"summary-{tag or 'run'}-parallel-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    out.write_text(json.dumps({"config": cfg, "summary": summary, "rows": rows}, ensure_ascii=False, indent=2,
+                              default=str), encoding="utf-8")
+    if not quiet:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    summary["_file"] = str(out)
+    summary["_rows"] = rows
+    return summary
 
 
 def run_suite(cfg: dict, tasks: list[dict], runs_root: str = "runs", repeats: int = 1,
@@ -167,7 +273,7 @@ def run_suite(cfg: dict, tasks: list[dict], runs_root: str = "runs", repeats: in
                     print(f"skip {task['id']}: no demo script for --policy scripted")
                 continue
             if p not in envs:
-                envs[p] = build_env(cfg, p)
+                envs[p] = _make_env(cfg, p) if p == "remote" else build_env(cfg, p)
             for rep in range(repeats):
                 row = run_task(cfg, task, envs[p], runs_root, rep, with_disturbance, tag, policy)
                 rows.append(row)
@@ -219,4 +325,15 @@ def summarize(rows: list[dict]) -> dict:
         "user_abort_runs": sum(1 for r in rows if r["status"] == "user_abort"),
         "avg_steps": mean("steps"), "avg_calls": mean("calls"), "avg_tokens": mean("tokens"),
         "avg_seconds": mean("seconds"),
+        "modality_totals": _sum_modality(rows),
+        "fallbacks": sum(r.get("fallbacks", 0) for r in rows),
+        "background_intrusions": sum(r.get("intrusions", 0) for r in rows),
     }
+
+
+def _sum_modality(rows: list[dict]) -> dict:
+    out: dict = {}
+    for r in rows:
+        for k, v in (r.get("modality") or {}).items():
+            out[k] = out.get(k, 0) + v
+    return out

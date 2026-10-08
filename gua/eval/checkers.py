@@ -140,6 +140,23 @@ def mock_state(env, key: str, equals: Any = True) -> tuple[bool, str]:
     return v == equals, f"state[{key!r}]={v!r} expected {equals!r}"
 
 
+@checker("sandbox_file_json", needs_env=True)
+def sandbox_file_json(env, path: str, equals: Any) -> tuple[bool, str]:
+    """沙箱应用自己写出的结果文件（不看 agent 的自述）。"""
+    raw = env.read_file(path)
+    try:
+        got = json.loads(raw) if raw else None
+    except ValueError:
+        got = raw
+    return got == equals, f"{path} = {got!r}, expected {equals!r}"
+
+
+@checker("sandbox_text", needs_env=True)
+def sandbox_text(env, text: str) -> tuple[bool, str]:
+    ok = text in env.observe(with_elements=True).all_text()
+    return ok, f"sandbox screen contains {text!r}: {ok}"
+
+
 def run_checks(specs: list[dict], env=None) -> tuple[bool, list[str]]:
     notes, all_ok = [], True
     for s in specs:

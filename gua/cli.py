@@ -87,6 +87,8 @@ def main(argv=None) -> None:
     e.add_argument("--tag", default="")
     e.add_argument("--policy", choices=["model", "scripted"], default="model",
                    help="scripted = 用任务里的 demo 脚本代替模型（离线、无需 API key）")
+    e.add_argument("--workers", type=int, default=1,
+                   help="v0.6：并行会话数（remote 任务每个 worker 自动启动一台本机沙箱电脑）")
     common(e)
 
     rp = sub.add_parser("replay", help="把一次运行渲染成 HTML 回放报告")
@@ -181,7 +183,12 @@ def main(argv=None) -> None:
         if not tasks:
             raise SystemExit(f"no tasks found in {a.tasks}")
         plat = a.platform if a.platform and a.platform != "auto" else None
-        s = run_suite(cfg, tasks, a.runs, a.repeats, not a.no_disturb, a.tag, a.policy, platform=plat)
+        if getattr(a, "workers", 1) and a.workers > 1:
+            from .eval.runner import run_suite_parallel
+            s = run_suite_parallel(cfg, tasks, a.runs, a.repeats, not a.no_disturb, a.tag, a.policy, platform=plat,
+                                   workers=a.workers)
+        else:
+            s = run_suite(cfg, tasks, a.runs, a.repeats, not a.no_disturb, a.tag, a.policy, platform=plat)
         print(f"summary file: {s['_file']}")
 
 

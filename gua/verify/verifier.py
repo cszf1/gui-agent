@@ -31,6 +31,8 @@ v0.3.1（第二轮审查条目 3 / 7；复审修复“旧证据洗白 / 持续 L
 """
 from __future__ import annotations
 
+import json
+
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -253,7 +255,11 @@ class Verifier:
         # 4.5) v0.6 动作级后置条件（actor 预测 + 语义动作自带）：全部 pass 才算成功证据；任一明确 fail 即失败
         preds = list(getattr(action, "expect", None) or [])
         from .postconditions import evaluate as _eval_pc, implied_postconditions
-        preds += [p for p in implied_postconditions(action, before) if p not in preds]
+
+        def _k(pc):      # 去重：同一谓词（忽略 role 等修饰字段）只核验一次
+            return tuple(sorted((k, json.dumps(v, sort_keys=True)) for k, v in pc.items() if k != "role"))
+        seen = {_k(pc) for pc in preds if isinstance(pc, dict)}
+        preds += [pc for pc in implied_postconditions(action, before) if _k(pc) not in seen]
         if preds:
             rep = _eval_pc(preds, before, after, use_a11y=self.use_a11y, output=exec_res.output or None)
             sig["postconditions"] = rep.to_list()
@@ -337,7 +343,8 @@ class Verifier:
         return rc
 
     def check_goal(self, obs: Observation, goal: str, evidence: str, expect_text: Optional[str] = None,
-                   stable: bool = True, baseline: Optional[Observation] = None) -> Check:
+                   stable: bool = True, baseline: Optional[Observation] = None,
+                   postconditions: Optional[list] = None) -> Check:
         """子目标/任务收尾核验：只看“现在”的屏幕，防止用旧证据宣告完成（任务状态失配）。
 
         先走 L1：若子目标给了 expect_text，且当前无障碍树/可见文本里出现、并且它不是 baseline 里就有的
@@ -349,6 +356,17 @@ class Verifier:
         ns = self._not_settled(obs, stable, "goal-L1")
         if ns:
             return ns
+        if postconditions:
+            # v0.6：子目标级后置条件（规划器给出，规则核验）。任何一条明确不成立 → 失败；全部成立且
+            # （若有 expect_text）文本证据也成立 → 成功；否则落回原有流程。
+            from .postconditions import evaluate as _eval_pc
+            rep = _eval_pc(postconditions, baseline, obs, use_a11y=self.use_a11y)
+            if rep.verdict == "failed":
+                return Check(Verdict.FAILED, f"sub-goal postcondition failed: {rep.evidence()}", "goal-L1",
+                             {"postconditions": rep.to_list()})
+            if rep.verdict == "success" and not expect_text:
+                return Check(Verdict.SUCCESS, f"all sub-goal postconditions hold now: {rep.evidence()}", "goal-L1",
+                             {"postconditions": rep.to_list()})
         stale = ""
         stale_block = ""
         if expect_text and self.use_a11y:
@@ -405,6 +423,19 @@ class Verifier:
                 stale_sgs = [sg for sg in checkable if sg.id not in (exempt_ids or set())
                              and self._stale_evidence(baseline, obs, sg.expect_text)]
                 proven = [sg for sg in checkable if sg not in stale_sgs]
+            # v0.6：没有 expect_text、但有子目标级后置条件的子目标：后置条件现在仍全部成立 = 规则证据
+            from .postconditions import evaluate as _eval_pc
+            for sg in subgoals:
+                pcs = getattr(sg, "postconditions", None)
+                if sg in checkable or not pcs:
+                    continue
+                rep = _eval_pc(pcs, None, obs, use_a11y=True)
+                if rep.verdict == "failed":
+                    return Check(Verdict.FAILED, f"no longer true on the current screen: sub-goal {sg.id} "
+                                 f"({sg.goal!r}) postconditions: {rep.evidence()}", "final-L1",
+                                 {"failed_subgoals": [sg.id]})
+                if rep.verdict == "success":
+                    proven.append(sg)
             if subgoals and len(proven) == len(subgoals) and final_l2 != "always":
                 return Check(Verdict.SUCCESS, f"all {len(subgoals)} sub-goal expectations visible now", "final-L1")
         if self.llm is None or not self.llm_goal:

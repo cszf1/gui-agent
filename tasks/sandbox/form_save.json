@@ -1,0 +1,103 @@
+{
+  "id": "sandbox_form_save",
+  "platform": "remote",
+  "instruction": "在 Gua Form 里把 Name 填成 Ada，勾选 Subscribe，选择 Pro 套餐，然后保存。",
+  "task_window": "Gua Form",
+  "setup": [
+    {
+      "type": "sandbox_launch",
+      "argv": [
+        "gua-form"
+      ],
+      "wait_for": "Save"
+    }
+  ],
+  "checks": [
+    {
+      "type": "sandbox_file_json",
+      "path": "result.json",
+      "equals": {
+        "name": "Ada",
+        "subscribe": true,
+        "plan": "Pro"
+      }
+    }
+  ],
+  "demo": {
+    "subgoals": [
+      {
+        "goal": "fill the form",
+        "expected": "name Ada, subscribed, Pro selected",
+        "steps": [
+          {
+            "set_value": "Name",
+            "text": "Ada",
+            "expect": [
+              {
+                "kind": "element_state",
+                "name": "Name",
+                "value": "Ada"
+              }
+            ]
+          },
+          {
+            "invoke": "Subscribe",
+            "method": "toggle",
+            "expect": [
+              {
+                "kind": "element_state",
+                "name": "Subscribe",
+                "checked": true
+              }
+            ]
+          },
+          {
+            "invoke": "Pro",
+            "method": "select",
+            "expect": [
+              {
+                "kind": "element_state",
+                "name": "Pro",
+                "checked": true
+              }
+            ]
+          }
+        ],
+        "postconditions": [
+          {
+            "kind": "element_state",
+            "name": "Name",
+            "value": "Ada"
+          },
+          {
+            "kind": "element_state",
+            "name": "Subscribe",
+            "checked": true
+          },
+          {
+            "kind": "element_state",
+            "name": "Pro",
+            "checked": true
+          }
+        ]
+      },
+      {
+        "goal": "save the form",
+        "expected": "status shows Saved: Ada",
+        "expect_text": "Saved: Ada",
+        "steps": [
+          {
+            "invoke": "Save",
+            "method": "invoke",
+            "expect": [
+              {
+                "kind": "text_appears",
+                "text": "Saved: Ada"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

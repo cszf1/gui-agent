@@ -34,6 +34,10 @@ def uncertain_activation(a: Action, obs: Optional[Observation]) -> bool:
         return a.method not in IDEMPOTENT
     if a.type == "click":
         el = obs.element(a.element_id) if obs is not None and a.element_id is not None else None
+        if el is None and obs is not None and a.element_id is None and a.x is not None and a.y is not None:
+            # v0.7: coordinate clicks (computer-use / vision actors) resolve the control under the
+            # point; focusing a text field is not an activation that must never be repeated.
+            el = obs.element_at(a.x, a.y)
         return el is None or el.role not in {"textbox", "combobox", "radio", "tab", "listitem"}
     if a.type in {"hotkey", "key_down"}:
         from .keys import ACTIVATION_KEYS, canonical_set

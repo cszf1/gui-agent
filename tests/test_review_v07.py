@@ -292,3 +292,13 @@ def test_windows_ascii_typing_bypasses_the_ime(monkeypatch):
     emoji = unicode_key_events("😀")
     assert len(emoji) == 4 and {e[1] for e in emoji} == {0xD83D, 0xDE00}
     assert unicode_key_events("\n")[0][0] == 0x0D
+
+
+def test_coordinate_click_on_a_text_field_is_not_an_unrepeatable_activation():
+    """视觉 / computer-use actor 只给坐标：v0.6 把“点文本框聚焦但看不出变化”记成未确认激活，之后再点同一字段被闸门拒绝。"""
+    from gua.hybrid import uncertain_activation
+    o = obs("form", [UIElement(1, "Name", "textbox", (100, 100, 300, 140)),
+                     UIElement(2, "Pay", "button", (100, 200, 220, 250))])
+    assert not uncertain_activation(Action("click", x=200, y=120), o)
+    assert uncertain_activation(Action("click", x=160, y=225), o)
+    assert uncertain_activation(Action("click", x=5, y=5), o)
